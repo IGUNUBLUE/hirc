@@ -35,6 +35,7 @@
   .agt.sel { background:var(--bg3); box-shadow:inset 2px 0 0 var(--accent) }
   .badge { width:22px; height:22px; border-radius:5px; display:flex; flex:none;
            align-items:center; justify-content:center; font-size:10px; font-weight:bold; color:#fff }
+  .badge img { width:15px; height:15px; filter:brightness(0) invert(1) }
   .agt .mid { min-width:0; flex:1 }
   .agt .addr { overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
   .agt .sub { color:var(--dim); font-size:10px; display:flex; gap:5px; align-items:center }
@@ -101,9 +102,8 @@ const KIND = {
   grok:['#444','Gk'], copilot:['#2da44e','Cp'], pi:['#4c9a5a','Pi'],
   omp:['#b5559d','Om'], gemini_cli:['#4285f4','Ge'], human:['#4c9a5a','Hu'],
 };
-const kindOf = a => (a.kind||'?');
 const badge = k => { const [c,l] = KIND[k] || ['#3a3a48', (k||'?').slice(0,2)];
-  return `<span class="badge" style="background:${c}">${esc(l)}</span>`; };
+  return `<span class="badge" style="background:${c}"><img src="/icons/${esc(k)}.svg" alt="" onerror="this.outerHTML='${esc(l)}'"></span>`; };
 
 let state = {agents:[], workspaces:[], messages:[]};
 let sel = localStorage.hircSel || null;

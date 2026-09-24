@@ -36,7 +36,8 @@ hirc machines · log · skill
 The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
 (Python stdlib + a single-file SPA — no build step, no node_modules):
 
-- **Roster** grouped by workspace, live status dots
+- **Roster** grouped by workspace with per-CLI logo badges (SVG marks from
+  [herdr-radar](https://github.com/hhdebb/herdr-radar), MIT), live status dots
 - **Feed** — every `hirc send` on this machine, including failures
 - **Agent view** — click an agent to tail its live pane output
 - **Compose** — you sign as `human@<host>`; agents reply with
