@@ -47,12 +47,20 @@
   </aside>
 
   <section class="content">
-    <nav class="chips" aria-label="conversations">
-      <span class="chip" :class="{on: filter==='all'}" @click="setFilter('all')">all</span>
-      <span class="chip" v-for="p in pairs" :key="p" :class="{on: filter===p}" @click="setFilter(p)">{{ p }}</span>
+    <nav class="tabs" aria-label="panels">
+      <button class="tab" :class="{on: view==='feed'}" @click="setView('feed')">
+        Feed<span class="tab-badge" v-if="view!=='feed' && freshFeed">{{ freshFeed }}</span>
+      </button>
+      <button class="tab" :class="{on: view==='output'}" @click="setView('output')" :disabled="!sel">
+        {{ sel ? sel + ' — live' : 'output' }}
+      </button>
+      <nav class="chips" aria-label="conversations" v-if="view==='feed'">
+        <span class="chip" :class="{on: filter==='all'}" @click="setFilter('all')">all</span>
+        <span class="chip" v-for="p in pairs" :key="p" :class="{on: filter===p}" @click="setFilter(p)">{{ p }}</span>
+      </nav>
     </nav>
 
-    <div id="feed" class="feed" aria-live="polite">
+    <div id="feed" class="feed" aria-live="polite" v-if="view==='feed'">
       <div class="msg" v-for="m in feed" :class="m.dir">
         <div class="meta">
           <span class="time">{{ time(m.ts) }}</span>
@@ -70,8 +78,8 @@
       <p class="empty" v-if="!feed.length">no messages yet</p>
     </div>
 
-    <div id="out" class="out">
-      <div class="hdr" v-if="sel">{{ sel }} — live output</div>
+    <div id="out" class="out" v-if="view==='output'">
+      <div class="hdr" v-if="sel">{{ sel }} — live output (3s)</div>
       <div class="hdr" v-else>select an agent to tail its live output</div>
       <pre class="tail" v-if="out">{{ out }}</pre>
     </div>

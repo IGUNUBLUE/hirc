@@ -100,9 +100,10 @@ class Api(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path in ("/", "/index.html"):
             return self._file(os.path.join(WEB_ROOT, "index.html"), "text/html; charset=utf-8")
-        if m := re.fullmatch(r"/(icons|css|js|vendor)/([\w.-]+)", u.path):
+        if m := re.fullmatch(r"/(icons|css|js|vendor|fonts)/([\w.-]+)", u.path):
             ctype = {".svg": "image/svg+xml", ".css": "text/css; charset=utf-8",
-                     ".js": "text/javascript; charset=utf-8"}.get(
+                     ".js": "text/javascript; charset=utf-8",
+                     ".woff2": "font/woff2"}.get(
                      os.path.splitext(m.group(2))[1])
             if ctype:
                 return self._file(os.path.join(WEB_ROOT, m.group(1), m.group(2)), ctype)

@@ -20,6 +20,7 @@ PetiteVue.createApp({
   agents: [], workspaces: [], messages: [], me: null,
   online: false, host: location.host,
   sel: localStorage.hircSel || null,
+  view: 'feed', feedSeen: now(),
   filter: localStorage.hircFilter || 'all',
   to: '', body: '', receipt: '', out: '',
   notify: localStorage.hircNotify === '1',
@@ -63,6 +64,10 @@ PetiteVue.createApp({
     return ms;
   },
   get addrBook() { return ['all', 'human', ...this.agents.map(a => a.address)]; },
+  get freshFeed() {
+    return this.view === 'feed' ? 0
+      : this.messages.filter(m => m.ts > this.feedSeen).length;
+  },
 
   // ---- helpers ----
   kindFor(addr) { return this.agents.find(a => a.address === addr)?.kind || (addr === 'human' ? 'human' : '?'); },
@@ -86,7 +91,8 @@ PetiteVue.createApp({
       }
       this.seenCount = Math.max(this.seenCount, d.messages.length);
       localStorage.hircCount = this.seenCount;
-      const stick = this._feed && (this._feed.scrollHeight - this._feed.scrollTop - this._feed.clientHeight < 40);
+      const stick = this.view === 'feed' && this._feed &&
+        (this._feed.scrollHeight - this._feed.scrollTop - this._feed.clientHeight < 40);
       Object.assign(this, { agents: d.agents, workspaces: d.workspaces, messages: d.messages, me: d.me });
       this.online = true;
       document.title = `hirc${this.nBlocked ? ` (${this.nBlocked} blocked)` : ''}`;
@@ -94,18 +100,28 @@ PetiteVue.createApp({
     } catch { this.online = false; }
   },
   async tail() {
-    if (!this.sel) return;
+    if (!this.sel || this.view !== 'output') return;
     try {
       const d = await (await fetch(`/api/agent/${encodeURIComponent(this.sel)}/output?lines=120`)).json();
       this.out = d.output || d.error || '';
     } catch { /* keep last frame */ }
+  },
+  setView(v) {
+    this.view = v;
+    if (v === 'feed') {
+      this.feedSeen = now();
+      requestAnimationFrame(() => {
+        this._feed = document.getElementById('feed');
+        if (this._feed) this._feed.scrollTop = this._feed.scrollHeight;
+      });
+    } else this.tail();
   },
   select(a) {
     this.sel = a.address; localStorage.hircSel = a.address;
     this.to = a.address;
     this.lastSeen[a.address] = now();
     localStorage.hircSeen = JSON.stringify(this.lastSeen);
-    this.tail();
+    this.setView('output');
   },
   setFilter(p) { this.filter = p; localStorage.hircFilter = p; },
   async toggleBell() {

@@ -2,6 +2,15 @@
 
 @layer tokens, base, layout, components;
 
+@font-face {
+  font-family: 'Inter var'; font-style: normal; font-weight: 100 900;
+  font-display: swap; src: url('/fonts/inter-var.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono var'; font-style: normal; font-weight: 100 800;
+  font-display: swap; src: url('/fonts/jetbrains-mono-var.woff2') format('woff2');
+}
+
 @layer tokens {
   :root {
     --bg: #16161c; --bg-2: #1d1d26; --bg-3: #24242f;
@@ -9,7 +18,8 @@
     --accent: #7aa2f7;
     --st-working: #d97757; --st-idle: #4c9a5a; --st-done: #6b9bd2;
     --st-blocked: #c04a4a; --st-unknown: #907aa9;
-    --font: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --font-sans: 'Inter var', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono var', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
     --fs: 13px; --fs-sm: 11px; --fs-xs: 10px;
     --sp-1: 4px; --sp-2: 8px; --sp-3: 10px; --sp-4: 14px;
     --r-sm: 4px; --r-md: 5px; --r-pill: 10px;
@@ -18,7 +28,7 @@
 
 @layer base {
   * { box-sizing: border-box; margin: 0 }
-  body { background: var(--bg); color: var(--fg); font: var(--fs)/1.45 var(--font);
+  body { background: var(--bg); color: var(--fg); font: var(--fs)/1.5 var(--font-sans);
          height: 100vh; display: flex; flex-direction: column; overflow: hidden }
   ::-webkit-scrollbar { width: 8px; height: 8px }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px }
@@ -75,9 +85,18 @@
             font-size: var(--fs-xs); padding: 0 6px; font-weight: bold }
   .empty { color: var(--dim); font-size: var(--fs-sm); padding: var(--sp-3) }
 
-  /* conversation chips */
-  .chips { display: flex; gap: 6px; padding: 7px var(--sp-4); background: var(--bg-2);
-           border-bottom: 1px solid var(--border); overflow-x: auto; flex: none }
+  /* tabs — Feed / live output */
+  .tabs { display: flex; align-items: center; gap: var(--sp-2); padding: 6px var(--sp-4) 0;
+          background: var(--bg-2); border-bottom: 1px solid var(--border); flex: none }
+  .tab { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--dim);
+         padding: 6px 10px; font-size: var(--fs); border-radius: var(--r-sm) var(--r-sm) 0 0;
+         display: inline-flex; align-items: center; gap: 6px }
+  .tab:hover:not(:disabled) { color: var(--fg) }
+  .tab.on { color: var(--accent); border-bottom-color: var(--accent) }
+  .tab:disabled { opacity: .45; cursor: default }
+  .tab-badge { background: var(--accent); color: #fff; border-radius: 9px;
+               font-size: var(--fs-xs); padding: 0 6px; font-weight: bold }
+  .tabs .chips { margin-left: auto; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px }
   .chip { border: 1px solid var(--border); border-radius: 11px; padding: 2px 10px;
           font-size: var(--fs-sm); color: var(--dim); cursor: pointer; white-space: nowrap;
           user-select: none; transition: color .12s, border-color .12s }
@@ -85,11 +104,11 @@
   .chip.on { color: var(--accent); border-color: var(--accent) }
 
   /* feed */
-  .feed { flex: 1.15; overflow-y: auto; padding: var(--sp-3) var(--sp-4);
-          border-bottom: 1px solid var(--border) }
+  .feed { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-4) }
   .msg { margin-bottom: var(--sp-3); padding-left: var(--sp-3); border-left: 2px solid var(--border) }
   .msg:hover { border-left-color: var(--dim) }
-  .msg .meta { color: var(--dim); font-size: var(--fs-sm); display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+  .msg .meta { color: var(--dim); font-size: var(--fs-sm); display: flex; gap: 8px;
+               align-items: center; flex-wrap: wrap; font-family: var(--font-mono) }
   .msg .time { opacity: .7 }
   .msg .who { display: inline-flex; gap: 5px; align-items: center }
   .msg .from { color: var(--accent) } .msg .to { color: var(--st-working) }
@@ -102,7 +121,7 @@
 
   /* agent output */
   .out { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-4); background: var(--bg-2);
-         color: #a9a7b8; font-size: 12px }
+         color: #a9a7b8; font-size: 12px; font-family: var(--font-mono) }
   .out .hdr { color: var(--dim); font-size: var(--fs-sm); margin-bottom: 6px }
   .out .tail { white-space: pre-wrap; word-break: break-word; font: inherit }
 
@@ -113,7 +132,8 @@
   .composer input { background: var(--bg-3); border: 1px solid var(--border); color: var(--fg);
                     padding: 7px 10px; border-radius: var(--r-sm) }
   .composer input:focus { border-color: var(--accent); outline: none }
-  #to, .composer input[list] { width: 190px }
+  .composer input[list] { width: 190px }
+  .composer input { font-family: var(--font-mono); font-size: 12px }
   .composer input[aria-label="message"] { flex: 1 }
   .composer button { background: var(--bg-3); border: 1px solid var(--border); color: var(--accent);
                      padding: 7px 14px; border-radius: var(--r-sm); transition: border-color .15s }
