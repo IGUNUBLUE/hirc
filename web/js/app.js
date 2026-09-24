@@ -20,7 +20,7 @@ PetiteVue.createApp({
   agents: [], workspaces: [], messages: [], me: null,
   online: false, host: location.host,
   sel: localStorage.hircSel || null,
-  view: 'feed', feedSeen: now(),
+  view: 'feed', feedSeen: now(), drawer: false,
   filter: localStorage.hircFilter || 'all',
   to: '', body: '', receipt: '', out: '',
   notify: localStorage.hircNotify === '1',
@@ -121,6 +121,7 @@ PetiteVue.createApp({
     this.to = a.address;
     this.lastSeen[a.address] = now();
     localStorage.hircSeen = JSON.stringify(this.lastSeen);
+    this.drawer = false;
     this.setView('output');
   },
   setFilter(p) { this.filter = p; localStorage.hircFilter = p; },

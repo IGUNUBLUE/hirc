@@ -43,9 +43,25 @@
   .topbar { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-4);
             background: var(--bg-2); border-bottom: 1px solid var(--border) }
   .topbar .spacer { flex: 1 }
-  main { flex: 1; display: grid; grid-template-columns: 260px 1fr; min-height: 0 }
+  main { flex: 1; display: grid; grid-template-columns: 260px 1fr; min-height: 0; position: relative }
   .content { display: flex; flex-direction: column; min-width: 0; min-height: 0 }
-  @media (max-width: 720px) { main { grid-template-columns: 1fr } .roster { display: none } }
+  .burger { display: none }
+  .backdrop { display: none }
+  @media (max-width: 720px) {
+    main { grid-template-columns: 1fr }
+    .burger { display: inline-flex }
+    .roster { position: absolute; inset: 0 auto 0 0; width: 78%; max-width: 300px; z-index: 20;
+              transform: translateX(-100%); transition: transform .18s ease-out;
+              border-right: 1px solid var(--border); box-shadow: 8px 0 24px rgba(0,0,0,.4) }
+    .roster.open { transform: none }
+    .backdrop { display: block; position: absolute; inset: 0; z-index: 15; background: rgba(0,0,0,.45) }
+    .tabs { flex-wrap: wrap; row-gap: 2px }
+    .composer { flex-wrap: wrap }
+    .composer input[list] { width: 100%; order: -1 }
+    .hint { display: none }
+    .topbar { gap: var(--sp-2); padding: var(--sp-2) var(--sp-3) }
+    .feed, .out { padding: var(--sp-2) var(--sp-3) }
+  }
 }
 
 @layer components {

@@ -12,6 +12,7 @@
 <body v-scope @vue:mounted="init()">
 
 <header class="topbar">
+  <button class="icon-btn burger" @click="drawer = !drawer" aria-label="agents menu">☰</button>
   <b class="brand">hirc</b>
   <span class="host">{{ host }}</span>
   <span class="conn" :class="{on: online}" :title="online ? 'connected' : 'disconnected'"></span>
@@ -26,7 +27,8 @@
 </header>
 
 <main>
-  <aside class="roster" aria-label="agents">
+  <div class="backdrop" v-if="drawer" @click="drawer = false"></div>
+  <aside class="roster" :class="{open: drawer}" aria-label="agents">
     <div class="ws-group" v-for="g in groups" :key="g.id">
       <div class="ws"><span>{{ g.label }}</span><span class="focus" v-if="g.focused" title="focused workspace">●</span></div>
       <div class="agt" v-for="a in g.agents" :key="a.pane"
