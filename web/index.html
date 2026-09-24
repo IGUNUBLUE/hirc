@@ -15,26 +15,43 @@
          height:100vh; display:flex; flex-direction:column; overflow:hidden }
   header { display:flex; align-items:center; gap:12px; padding:8px 14px;
            background:var(--bg2); border-bottom:1px solid var(--border) }
-  header b { color:var(--accent) }
-  header .host { color:var(--dim) }
+  header b { color:var(--accent); font-size:15px }
+  .host { color:var(--dim) }
   #dot { width:8px; height:8px; border-radius:50%; background:var(--red) }
   #dot.on { background:var(--green) }
-  main { flex:1; display:grid; grid-template-columns:230px 1fr; min-height:0 }
+  #blocked { display:none; background:var(--red); color:#fff; padding:1px 8px;
+             border-radius:10px; font-size:11px; font-weight:bold }
+  #bell { margin-left:auto; background:none; border:1px solid var(--border); color:var(--dim);
+          border-radius:4px; padding:3px 8px; cursor:pointer; font:inherit }
+  #bell.on { color:var(--amber); border-color:var(--amber) }
+  main { flex:1; display:grid; grid-template-columns:250px 1fr; min-height:0 }
   aside { border-right:1px solid var(--border); overflow-y:auto; background:var(--bg2) }
-  .ws { padding:8px 10px 4px; color:var(--dim); font-size:11px; text-transform:uppercase;
-        letter-spacing:.06em; border-top:1px solid var(--border) }
+  .ws { padding:9px 10px 4px; color:var(--dim); font-size:10px; text-transform:uppercase;
+        letter-spacing:.07em; border-top:1px solid var(--border); display:flex; gap:6px }
   .ws:first-child { border-top:0 }
-  .agt { padding:5px 10px 5px 18px; cursor:pointer; display:flex; gap:7px; align-items:center }
+  .ws .focus { color:var(--accent) }
+  .agt { padding:6px 10px; cursor:pointer; display:flex; gap:8px; align-items:center }
   .agt:hover { background:var(--bg3) }
   .agt.sel { background:var(--bg3); box-shadow:inset 2px 0 0 var(--accent) }
-  .agt .st { width:7px; height:7px; border-radius:50%; flex:none }
-  .st.working { background:var(--amber) } .st.idle { background:var(--green) }
-  .st.done { background:var(--blue) } .st.blocked { background:var(--red) }
-  .st.unknown { background:var(--purple) }
+  .badge { width:22px; height:22px; border-radius:5px; display:flex; flex:none;
+           align-items:center; justify-content:center; font-size:10px; font-weight:bold; color:#fff }
+  .agt .mid { min-width:0; flex:1 }
   .agt .addr { overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-  .agt .kind { color:var(--dim); font-size:11px; margin-left:auto }
+  .agt .sub { color:var(--dim); font-size:10px; display:flex; gap:5px; align-items:center }
+  .st { width:6px; height:6px; border-radius:50%; display:inline-block }
+  .st.working { background:var(--amber); animation:pulse 1.2s infinite }
+  .st.idle { background:var(--green) } .st.done { background:var(--blue) }
+  .st.blocked { background:var(--red) } .st.unknown { background:var(--purple) }
+  @keyframes pulse { 50% { opacity:.35 } }
+  .unread { background:var(--accent); color:#fff; border-radius:9px; font-size:10px;
+            padding:0 6px; font-weight:bold }
   section { display:flex; flex-direction:column; min-width:0; min-height:0 }
-  #feed { flex:1.2; overflow-y:auto; padding:10px 14px; border-bottom:1px solid var(--border) }
+  #chips { display:flex; gap:6px; padding:7px 14px; background:var(--bg2);
+           border-bottom:1px solid var(--border); overflow-x:auto; flex:none }
+  .chip { border:1px solid var(--border); border-radius:11px; padding:2px 10px;
+          font-size:11px; color:var(--dim); cursor:pointer; white-space:nowrap }
+  .chip:hover { color:var(--fg) } .chip.on { color:var(--accent); border-color:var(--accent) }
+  #feed { flex:1.15; overflow-y:auto; padding:10px 14px; border-bottom:1px solid var(--border) }
   .msg { margin-bottom:10px }
   .msg .meta { color:var(--dim); font-size:11px }
   .msg .meta .from { color:var(--accent) } .msg .meta .to { color:var(--amber) }
@@ -47,27 +64,28 @@
   form { display:flex; gap:8px; padding:10px 14px; border-top:1px solid var(--border); background:var(--bg2) }
   input,button { background:var(--bg3); border:1px solid var(--border); color:var(--fg);
                  font:inherit; padding:7px 10px; border-radius:4px }
-  #to { width:180px } #msg { flex:1 }
-  button { cursor:pointer; color:var(--accent) } button:hover { border-color:var(--accent) }
+  #to { width:190px } #msg { flex:1 }
+  form button { cursor:pointer; color:var(--accent) } form button:hover { border-color:var(--accent) }
   #receipt { font-size:11px; padding:0 14px 8px; color:var(--dim); background:var(--bg2) }
-  .hint { color:var(--dim); font-size:11px; padding:6px 14px; background:var(--bg2) }
 </style>
 </head>
 <body>
 <header>
   <b>hirc</b> <span class="host" id="host"></span>
-  <span id="dot"></span><span id="me" style="color:var(--dim)"></span>
-  <span style="margin-left:auto;color:var(--dim);font-size:11px">agents reply to you with: hirc send human "…"</span>
+  <span id="dot"></span><span style="color:var(--dim)">you: human</span>
+  <span id="blocked"></span>
+  <button id="bell" title="browser notifications for messages to human">🔕</button>
 </header>
 <main>
   <aside id="roster"></aside>
   <section>
-    <div class="hint">message feed — every hirc send on this machine</div>
+    <div id="chips"></div>
     <div id="feed"></div>
     <div id="out"><div class="hdr">select an agent to tail its live output</div></div>
     <div id="receipt"></div>
     <form id="f">
-      <input id="to" placeholder="to (addr)" autocomplete="off">
+      <input id="to" list="addrs" placeholder="to (addr)" autocomplete="off">
+      <datalist id="addrs"></datalist>
       <input id="msg" placeholder="message — you sign as human@host" autocomplete="off">
       <button>send</button>
     </form>
@@ -75,34 +93,98 @@
 </main>
 <script>
 const $ = s => document.querySelector(s);
-let state = {agents:[], workspaces:[], messages:[]}, sel = null;
+const KIND = {
+  claude:['#d97757','Cl'], codex:['#565869','Cx'], devin:['#7aa2f7','Dv'],
+  gemini:['#4285f4','Ge'], kimi:['#1783ff','Km'], kiro:['#9046ff','Kr'],
+  qwen:['#615ced','Qw'], deepseek:['#4d6bfe','Ds'], opencode:['#6b9bd2','Oc'],
+  cline:['#586876','Cn'], kilo:['#9a9808','Kl'], amp:['#c98a1f','Am'],
+  grok:['#444','Gk'], copilot:['#2da44e','Cp'], pi:['#4c9a5a','Pi'],
+  omp:['#b5559d','Om'], gemini_cli:['#4285f4','Ge'], human:['#4c9a5a','Hu'],
+};
+const kindOf = a => (a.kind||'?');
+const badge = k => { const [c,l] = KIND[k] || ['#3a3a48', (k||'?').slice(0,2)];
+  return `<span class="badge" style="background:${c}">${esc(l)}</span>`; };
+
+let state = {agents:[], workspaces:[], messages:[]};
+let sel = localStorage.hircSel || null;
+let filter = localStorage.hircFilter || 'all';
+let lastSeen = JSON.parse(localStorage.hircSeen || '{}');
+let seenCount = +(localStorage.hircCount || 0);
+let notify = localStorage.hircNotify === '1';
+$('#bell').className = notify ? 'on' : ''; $('#bell').textContent = notify ? '🔔' : '🔕';
+$('#bell').onclick = async () => {
+  notify = !notify;
+  if (notify && Notification.permission !== 'granted')
+    notify = (await Notification.requestPermission()) === 'granted';
+  localStorage.hircNotify = notify ? '1' : '0';
+  $('#bell').className = notify ? 'on' : ''; $('#bell').textContent = notify ? '🔔' : '🔕';
+};
+
+const pairKey = m => {
+  const a = m.from || '?', b = m.to;
+  return m.to === 'human' ? `${a}→human` : [a, b].sort().join('↔');
+};
 
 async function poll() {
   try {
-    const r = await fetch('/api/state'); state = await r.json();
-    $('#dot').className = 'on'; render();
+    const r = await fetch('/api/state'); const d = await r.json();
+    if (d.messages.length > seenCount && notify && Notification.permission === 'granted') {
+      const fresh = d.messages.slice(seenCount).filter(m => m.to === 'human');
+      for (const m of fresh) new Notification(`hirc · ${m.from}`, {body: m.body.slice(0, 120)});
+    }
+    seenCount = Math.max(seenCount, d.messages.length);
+    localStorage.hircCount = seenCount;
+    state = d; $('#dot').className = 'on'; render();
   } catch { $('#dot').className = ''; }
 }
+
+function unreadFor(addr) {
+  const seen = lastSeen[addr] || 0;
+  return state.messages.filter(m => m.ts > seen && (m.from === addr || m.to === addr)).length;
+}
+
 function render() {
   $('#host').textContent = location.host;
-  $('#me').textContent = 'you: human';
+  const nBlocked = state.agents.filter(a => a.status === 'blocked').length;
+  $('#blocked').style.display = nBlocked ? '' : 'none';
+  $('#blocked').textContent = `${nBlocked} blocked`;
+
   const wsLabel = Object.fromEntries((state.workspaces||[]).map(w => [w.workspace_id, w.label || w.workspace_id]));
   const groups = {};
   for (const a of state.agents) (groups[a.workspace] ||= []).push(a);
+  const rank = {blocked:0, working:1, unknown:2, idle:3, done:4};
   let html = '';
   for (const [ws, agents] of Object.entries(groups)) {
-    html += `<div class="ws">${esc(wsLabel[ws] || ws)}</div>`;
-    for (const a of agents)
+    const focused = (state.workspaces||[]).find(w => w.workspace_id === ws)?.focused;
+    html += `<div class="ws">${esc(wsLabel[ws] || ws)}${focused ? '<span class="focus">●</span>' : ''}</div>`;
+    agents.sort((x, y) => (rank[x.status] ?? 5) - (rank[y.status] ?? 5));
+    for (const a of agents) {
+      const u = unreadFor(a.address);
       html += `<div class="agt ${sel===a.address?'sel':''}" data-a="${esc(a.address)}">
-        <span class="st ${a.status}"></span>
-        <span class="addr">${esc(a.address)}</span>
-        <span class="kind">${esc(a.kind)}</span></div>`;
+        ${badge(a.kind)}
+        <span class="mid"><span class="addr">${esc(a.address)}</span>
+        <span class="sub"><span class="st ${a.status}"></span>${a.status}</span></span>
+        ${u ? `<span class="unread">${u}</span>` : ''}</div>`;
+    }
   }
   $('#roster').innerHTML = html || '<div class="ws">no agents</div>';
   document.querySelectorAll('.agt').forEach(el => el.onclick = () => {
-    sel = el.dataset.a; $('#to').value = sel; render(); tail();
+    sel = el.dataset.a; localStorage.hircSel = sel;
+    $('#to').value = sel; lastSeen[sel] = now(); localStorage.hircSeen = JSON.stringify(lastSeen);
+    render(); tail();
   });
-  $('#feed').innerHTML = state.messages.map(m => `
+
+  // conversation chips
+  const pairs = [...new Set(state.messages
+    .filter(m => /delivered/.test(m.result)).map(pairKey))].slice(-12);
+  $('#chips').innerHTML = ['all', ...pairs].map(p =>
+    `<span class="chip ${filter===p?'on':''}" data-p="${esc(p)}">${esc(p)}</span>`).join('');
+  document.querySelectorAll('.chip').forEach(el => el.onclick = () => {
+    filter = el.dataset.p; localStorage.hircFilter = filter; render();
+  });
+
+  const msgs = filter === 'all' ? state.messages : state.messages.filter(m => pairKey(m) === filter);
+  $('#feed').innerHTML = msgs.map(m => `
     <div class="msg ${m.dir}">
       <div class="meta">${time(m.ts)} <span class="from">${esc(m.from||'?')}</span>
         → <span class="to">${esc(m.to)}</span>
@@ -110,7 +192,12 @@ function render() {
       <div class="body">${esc(m.body)}</div>
     </div>`).join('') || '<div class="meta">no messages yet</div>';
   $('#feed').scrollTop = $('#feed').scrollHeight;
+
+  $('#addrs').innerHTML = ['all', 'human', ...state.agents.map(a => a.address)]
+    .map(a => `<option value="${esc(a)}">`).join('');
+  document.title = `hirc${nBlocked ? ` (${nBlocked} blocked)` : ''}`;
 }
+
 async function tail() {
   if (!sel) return;
   const r = await fetch(`/api/agent/${encodeURIComponent(sel)}/output?lines=120`);
@@ -118,6 +205,7 @@ async function tail() {
   $('#out').innerHTML = `<div class="hdr">${esc(sel)} — live output (3s)</div>` + esc(d.output || d.error || '');
   $('#out').scrollTop = $('#out').scrollHeight;
 }
+
 $('#f').onsubmit = async e => {
   e.preventDefault();
   const to = $('#to').value.trim(), body = $('#msg').value.trim();
@@ -129,6 +217,7 @@ $('#f').onsubmit = async e => {
   $('#receipt').textContent = (d.receipts || [d.error]).join('  ');
   setTimeout(poll, 400);
 };
+const now = () => Math.floor(Date.now()/1000);
 const time = ts => new Date(ts*1000).toTimeString().slice(0,8);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 poll(); setInterval(poll, 2500); setInterval(tail, 3000);
