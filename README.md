@@ -77,6 +77,8 @@ hirc nick <your-name>, then `hirc send all "Hi, I'm <name>, working on
 
 ## Web console — http://127.0.0.1:9344
 
+![hirc web console — workspace channels, live feed, agent roster](docs/mockup.svg)
+
 The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
 (Python stdlib + a single-file SPA — no build step, no node_modules):
 
