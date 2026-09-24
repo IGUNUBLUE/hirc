@@ -222,7 +222,9 @@ def mail_watch():
                     if stem.endswith(".jsonl"):
                         _STATS["sweeps"] += 1
                         rc, out, err = run(["flush", "--if-idle", stem[:-6]], timeout=20)
-                        dlog("sweep", target=stem[:-6], rc=rc, out=(out or err).strip()[:200])
+                        res = (out or err).strip()[:200]
+                        if res or rc != 0:      # skip empty sweeps — signal over noise
+                            dlog("sweep", target=stem[:-6], rc=rc, out=res)
             except OSError:
                 pass
         time.sleep(1.5)
