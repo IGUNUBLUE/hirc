@@ -18,6 +18,7 @@ const time = ts => new Date(ts * 1000).toTimeString().slice(0, 8);
 PetiteVue.createApp({
   // ---- state ----
   agents: [], workspaces: [], messages: [], me: null,
+  machines: [], machine: localStorage.hircMachine || '',
   online: false, host: location.host,
   sel: localStorage.hircSel || null,
   view: 'feed', feedSeen: now(), drawer: false,
@@ -30,6 +31,7 @@ PetiteVue.createApp({
   // ---- lifecycle ----
   init() {
     this.poll();
+    fetch('/api/machines').then(r => r.json()).then(d => { this.machines = d.machines || []; }).catch(() => {});
     // SSE push: roster/feed changes arrive instantly; slow poll as fallback
     const es = new EventSource('/api/events');
     let deb;
@@ -105,7 +107,7 @@ PetiteVue.createApp({
   // ---- actions ----
   async poll() {
     try {
-      const d = await (await fetch('/api/state')).json();
+      const d = await (await fetch('/api/state' + (this.machine ? `?machine=${encodeURIComponent(this.machine)}` : ''))).json();
       if (d.messages.length > this.seenCount && this.notify && Notification.permission === 'granted') {
         for (const m of d.messages.slice(this.seenCount).filter(m => m.to === 'human'))
           new Notification(`hirc · ${m.from}`, { body: (m.body || '').slice(0, 120) });
@@ -146,6 +148,10 @@ PetiteVue.createApp({
     this.setView('output');
   },
   setFilter(p) { this.filter = p; localStorage.hircFilter = p; },
+  setMachine(m) {
+    this.machine = m; localStorage.hircMachine = m;
+    this.sel = null; this.setView('feed'); this.poll();
+  },
   openChannel(g) {
     this.setFilter('chan:' + g.id);
     this.to = '#' + g.label;
@@ -164,7 +170,7 @@ PetiteVue.createApp({
     this.body = '';
     const r = await fetch('/api/send', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, body }),
+      body: JSON.stringify({ to, body, machine: this.machine }),
     });
     const d = await r.json();
     this.receipt = (d.receipts || [d.error]).join('  ');

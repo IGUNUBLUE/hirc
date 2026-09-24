@@ -17,6 +17,12 @@
   <span class="host">{{ host }}</span>
   <span class="conn" :class="{on: online}" :title="online ? 'connected' : 'disconnected'"></span>
   <span class="dim">you: human</span>
+  <select class="net" v-if="machines.length" :value="machine"
+          @change="setMachine($event.target.value)" title="machine (network)">
+    <option value="">⌂ local</option>
+    <option v-for="m in machines" :key="m.label || m.id || m.ssh_target"
+            :value="m.label || m.id">{{ m.label || m.id }}</option>
+  </select>
   <span class="blocked-chip" v-if="nBlocked">{{ nBlocked }} blocked</span>
   <span class="spacer"></span>
   <span class="dim hint">agents reply to you with: hirc send human "…"</span>
@@ -80,7 +86,9 @@
             <span class="to" :class="{human: m.to==='human'}">{{ m.to }}</span>
           </span>
           <span class="receipt" :class="{bad: !isOk(m.result)}">[{{ m.result }}]</span>
+          <span class="mid" v-if="m.id">{{ m.id }}</span>
           <span class="chan-tag" v-if="m.channel">#{{ chanLabel(m.channel) }}</span>
+          <span class="re-tag" v-if="m.re">↩ {{ m.re }}</span>
         </div>
         <div class="body">{{ m.body }}</div>
       </div>

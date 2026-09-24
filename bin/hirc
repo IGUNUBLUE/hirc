@@ -257,7 +257,8 @@ def merged_envelope(msgs):
     return "\n".join(lines)
 
 
-def log_msg(direction, target, body, result, machine=None, channel=None):
+def log_msg(direction, target, body, result, machine=None, channel=None,
+            msg_id=None, reply_to=None):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         entry = {
@@ -267,6 +268,10 @@ def log_msg(direction, target, body, result, machine=None, channel=None):
         }
         if channel:
             entry["channel"] = channel
+        if msg_id:
+            entry["id"] = msg_id
+        if reply_to:
+            entry["re"] = reply_to
         with open(LOG_FILE, "a") as f:
             f.write(json.dumps(entry) + "\n")
     except OSError:
@@ -365,6 +370,8 @@ def cmd_nick(args):
     name = args.name
     if not NAME_RE.match(name):
         die(f"invalid name '{name}' — must match [a-z][a-z0-9_-]{{0,31}}")
+    if name in HUMAN_ALIASES:
+        die(f"'{name}' is reserved for the human mailbox — pick another")
     pane = os.environ.get("HERDR_PANE_ID") or die("not inside a Herdr pane; cannot self-register")
     ok, _, err = herdr(["agent", "rename", pane, name])
     if not ok:
@@ -387,19 +394,22 @@ def send_to(name, mach, body, channel=None, reply_to=None, defer=True):
     m = new_msg(where, body, channel, reply_to)
     mail_append(m)
     if name in HUMAN_ALIASES and not mach:
-        log_msg("in", "human", body, "delivered", channel=channel)
+        log_msg("in", "human", body, "delivered", channel=channel,
+                msg_id=m["id"], reply_to=reply_to)
         print("delivered → human (web feed at http://127.0.0.1:9344)")
         return
     status = agent_status(name) if not mach else None
     if defer and not mach and status in ("working", "blocked"):
         pend_append(m)
         print(f"queued → {where}  (busy — coalesces into one turn on idle; --now overrides)")
-        log_msg("out", where, body, "queued", mach, channel=channel)
+        log_msg("out", where, body, "queued", mach, channel=channel,
+                msg_id=m["id"], reply_to=reply_to)
         return
     msgs = pend_drain(name) + [m]
     receipt, detail = deliver(name, merged_envelope(msgs), mach)
     print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))
-    log_msg("out", where, body, receipt, mach, channel=channel)
+    log_msg("out", where, body, receipt, mach, channel=channel,
+            msg_id=m["id"], reply_to=reply_to)
 
 
 def cmd_send(args):
@@ -626,11 +636,129 @@ def _log_visible(line, pred):
         return True
 
 
+def cmd_stats(args):
+    msgs = mail_scan()
+    if not msgs:
+        print("(no mail yet)")
+        return
+    from collections import Counter
+    by_from = Counter(addr_base(m.get("from")) for m in msgs)
+    by_to = Counter(addr_base(m.get("to")) for m in msgs)
+    by_day = Counter(time.strftime("%Y-%m-%d", time.localtime(m["ts"])) for m in msgs)
+    n_chan = sum(1 for m in msgs if m.get("channel"))
+    print(f"{len(msgs)} messages · {len(by_from)} senders · {n_chan} channel posts\n")
+    print("TOP SENDERS          TOP TARGETS")
+    top_s = by_from.most_common(6)
+    top_t = by_to.most_common(6)
+    for i in range(max(len(top_s), len(top_t))):
+        s = f"{top_s[i][0]} ({top_s[i][1]})" if i < len(top_s) else ""
+        t = f"{top_t[i][0]} ({top_t[i][1]})" if i < len(top_t) else ""
+        print(f"  {s:<20} {t}")
+    print("\nPER DAY")
+    for day in sorted(by_day):
+        print(f"  {day}  {'█' * min(40, by_day[day])} {by_day[day]}")
+
+
 def cmd_skill(_args):
     try:
         sys.stdout.write(open(SKILL_PATH).read())
     except OSError:
         die(f"skill doc not found at {SKILL_PATH}")
+
+
+# --- MCP adapter -------------------------------------------------------------
+# `hirc mcp` is a stdio JSON-RPC server exposing the CLI as MCP tools, so
+# MCP-capable harnesses (Claude Code, Codex, ...) get hirc natively.
+# Subcommands run as subprocesses so tool output never pollutes stdout.
+
+MCP_TOOLS = [
+    ("hirc_whoami", "Your hirc address and status", {}),
+    ("hirc_list", "Roster of live agents (addresses, kinds, status, workspaces)", {}),
+    ("hirc_send", "Send a message to a peer. to = agent name, pane id, '#workspace' channel, 'all', or 'human'",
+     {"to": {"type": "string"}, "message": {"type": "string"}, "now": {"type": "boolean"}}),
+    ("hirc_reply", "Reply to a message by its short id", {"id": {"type": "string"}, "message": {"type": "string"}}),
+    ("hirc_inbox", "Read your durable mail (marks seen unless peek=true)",
+     {"peek": {"type": "boolean"}, "all": {"type": "boolean"}}),
+    ("hirc_check", "Cheap check: exits non-zero unless new mail waits", {}),
+    ("hirc_read", "Tail a peer's live output", {"to": {"type": "string"}, "lines": {"type": "integer"}}),
+    ("hirc_wait", "Block until a peer settles", {"to": {"type": "string"}, "until": {"type": "string"}, "timeout": {"type": "integer"}}),
+    ("hirc_log", "Message log scoped to your workspace", {"lines": {"type": "integer"}, "all": {"type": "boolean"}}),
+    ("hirc_flush", "Deliver queued coalesced messages", {"to": {"type": "string"}}),
+]
+
+
+def _mcp_call(tool, a):
+    """Map an MCP tool call to a hirc subprocess invocation."""
+    exe = os.path.realpath(__file__)
+    cmd = {"hirc_whoami": [exe, "whoami"], "hirc_list": [exe, "list"],
+           "hirc_check": [exe, "check"], "hirc_skill": [exe, "skill"]}.get(tool)
+    if cmd is None:
+        if tool == "hirc_send":
+            cmd = [exe, "send", str(a["to"]), str(a["message"])] + (["--now"] if a.get("now") else [])
+        elif tool == "hirc_reply":
+            cmd = [exe, "reply", str(a["id"]), str(a["message"])]
+        elif tool == "hirc_inbox":
+            cmd = [exe, "inbox"] + (["--peek"] if a.get("peek") else []) + (["--all"] if a.get("all") else [])
+        elif tool == "hirc_read":
+            cmd = [exe, "read", str(a["to"]), "--lines", str(a.get("lines", 60))]
+        elif tool == "hirc_wait":
+            cmd = [exe, "wait", str(a["to"])]
+            if a.get("until"): cmd += ["--until", str(a["until"])]
+            if a.get("timeout"): cmd += ["--timeout", str(a["timeout"])]
+        elif tool == "hirc_log":
+            cmd = [exe, "log", "--lines", str(a.get("lines", 20))] + (["--all"] if a.get("all") else [])
+        elif tool == "hirc_flush":
+            cmd = [exe, "flush"] + ([str(a["to"])] if a.get("to") else [])
+        else:
+            return None
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
+        return (p.stdout + p.stderr).strip() or "(no output)", p.returncode
+    except subprocess.TimeoutExpired:
+        return "hirc: timed out", 124
+
+
+def cmd_mcp(_args):
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        mid, method = req.get("id"), req.get("method", "")
+        if mid is None:                       # notification — no response
+            continue
+        if method == "initialize":
+            out = {"protocolVersion": req.get("params", {}).get("protocolVersion", "2024-11-05"),
+                   "capabilities": {"tools": {}},
+                   "serverInfo": {"name": "hirc", "version": VERSION}}
+        elif method == "ping":
+            out = {}
+        elif method == "tools/list":
+            out = {"tools": [{"name": n, "description": d,
+                              "inputSchema": {"type": "object", "properties": props,
+                                              "required": [k for k, v in props.items()
+                                                         if v["type"] == "string" and k in ("to", "message", "id")]}}
+                             for n, d, props in MCP_TOOLS]}
+        elif method == "tools/call":
+            p = req.get("params", {})
+            res = _mcp_call(p.get("name"), p.get("arguments") or {})
+            if res is None:
+                sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid,
+                    "error": {"code": -32602, "message": "unknown tool"}}) + "\n")
+                sys.stdout.flush()
+                continue
+            text, rc = res
+            out = {"content": [{"type": "text", "text": text}], "isError": rc != 0}
+        else:
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid,
+                "error": {"code": -32601, "message": f"unknown method {method}"}}) + "\n")
+            sys.stdout.flush()
+            continue
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": mid, "result": out}) + "\n")
+        sys.stdout.flush()
 
 
 def main():
@@ -670,6 +798,8 @@ def main():
     p.add_argument("--lines", type=int, default=20); p.add_argument("--all", action="store_true", help="operator view: unscoped log")
     p.set_defaults(fn=cmd_log)
     p = sub.add_parser("skill", help="print the agent skill doc"); p.set_defaults(fn=cmd_skill)
+    p = sub.add_parser("mcp", help="serve hirc as MCP tools over stdio"); p.set_defaults(fn=cmd_mcp)
+    p = sub.add_parser("stats", help="mail usage stats (who talks to whom, per day)"); p.set_defaults(fn=cmd_stats)
 
     args = ap.parse_args()
     args.fn(args)

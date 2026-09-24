@@ -52,12 +52,15 @@ hirc send all "build is green again"
 hirc ask wE:p1 "Does your diff still touch relay/session.rs?" --timeout 120000
 ```
 
-- `send` is fire-and-forget. Receipts print immediately:
+- `send` is fire-and-forget and **durable** — every message lands in the local
+  mail store (`mail/`) before delivery, so it survives even if the peer is gone.
+- Receipts print immediately:
   - `delivered` — text is in the peer's input queue; do NOT re-ask "did you get it".
+  - `queued` — the peer is busy; your message coalesces with others into ONE
+    turn delivered when it goes idle (`hirc flush <to>` forces it, `--now`
+    sends immediately). This saves peers a turn per message — prefer it.
   - `blocked` — the peer sits at an approval/question dialog; report to your user, don't retry in a loop.
   - `failed:agent_not_found` — wrong address or the agent exited; run `hirc list`.
-- Messaging a `working` agent queues your text for its next turn — that IS the
-  wake mechanism. Messaging `idle`/`done` agents works the same way.
 - `ask` = `send` + wait for the peer to settle + print its output tail. Use it
   for synchronous questions; prefer async `send` when you can keep working.
 - `read <to>` tails a peer's output without sending anything.
@@ -66,22 +69,37 @@ hirc ask wE:p1 "Does your diff still touch relay/session.rs?" --timeout 120000
 ## Receiving — what a message looks like
 
 Messages arrive in your input as a normal user turn, prefixed with a routing
-header:
+header carrying the message id:
 
 ```
-[hirc from reviewer@archbox — reply: hirc send 'reviewer@archbox' "msg"]
+[hirc a3f2c1 from reviewer@archbox — reply: hirc reply a3f2c1 "msg"]
 Does your diff still touch relay/session.rs?
 ```
 
-When you see `[hirc from <addr>]`:
+Several coalesced messages arrive as one batch:
+
+```
+[hirc b77e01 — 3 messages — reply to any with: hirc reply <id> "msg"]
+--- a3f2c1 from reviewer@archbox: ...
+--- c9d4e2 from backend@sd: ...
+```
+
+When you see `[hirc ...]`:
 
 1. Treat it as a steering message from a peer agent, not from the user.
 2. Answer it directly — lead with the answer, never quote the message back.
-3. Reply with `hirc send '<addr>' "..."` using the exact `from` address.
-   For a remote sender, pick the profile in `hirc machines` that points back at
-   their host; if none exists, tell your user the reply path is missing.
+3. Reply with `hirc reply <id> "..."` (keeps threading), or
+   `hirc send '<from-addr>' "..."` using the address in the header — required
+   for remote senders, whose mail store isn't local.
 4. Then continue your actual task. Don't narrate the exchange to the user
    unless the content matters to them.
+
+## Your durable inbox
+
+Mail survives delivery: `hirc inbox` shows unread mail addressed to you and
+marks it seen (`--peek` doesn't), `hirc check` exits 0 when mail waits and is
+nearly free to run. If you suspect a missed prompt — or after coming back from
+a crash — run `hirc inbox` before asking anyone to resend.
 
 ## Rules
 

@@ -276,22 +276,27 @@ class Api(BaseHTTPRequestHandler):
                         _sse.remove(q)
             return
         if u.path == "/api/state":
-            rc, out, _ = run(["list", "--json"])
+            machine = q.get("machine", [""])[0] or None
+            rc, out, _ = run(["list", "--json"] + (["--machine", machine] if machine else []))
             try:
                 agents = json.loads(out) if rc == 0 else []
             except json.JSONDecodeError:
                 agents = []
-            ws, _ = run_herdr(["workspace", "list"])
+            if machine:
+                for a in agents:
+                    a["machine"] = machine
+            ws, _ = run_herdr((["--machine", machine] if machine else []) + ["workspace", "list"])
             workspaces = (ws or {}).get("workspaces", []) if isinstance(ws, dict) else []
-            rc, me_out, _ = run(["whoami", "--json"])
             me = None
-            if rc == 0:
-                try:
-                    me = json.loads(me_out)
-                except json.JSONDecodeError:
-                    pass
+            if not machine:
+                rc, me_out, _ = run(["whoami", "--json"])
+                if rc == 0:
+                    try:
+                        me = json.loads(me_out)
+                    except json.JSONDecodeError:
+                        pass
             return self._json({
-                "agents": agents, "workspaces": workspaces,
+                "agents": agents, "workspaces": workspaces, "machine": machine or "local",
                 "messages": read_log(), "me": me, "ts": int(time.time()),
             })
         if m := re.fullmatch(r"/api/agent/([^/]+)/output", u.path):
@@ -317,7 +322,8 @@ class Api(BaseHTTPRequestHandler):
             to, msg = (body.get("to") or "").strip(), (body.get("body") or "").strip()
             if not to or not msg:
                 return self._json({"error": "missing to/body"}, 400)
-            rc, out, err = run(["send", to, msg])
+            mach = (body.get("machine") or "").strip() or None
+            rc, out, err = run(["send"] + (["--machine", mach] if mach else []) + [to, msg])
             receipts = [l for l in (out + err).splitlines() if l.strip()]
             return self._json({"ok": rc == 0, "receipts": receipts})
         return self._json({"error": "not found"}, 404)

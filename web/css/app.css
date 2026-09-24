@@ -140,6 +140,10 @@
   .msg .receipt { opacity: .8 } .msg .receipt.bad { color: var(--st-blocked); opacity: 1 }
   .chan-tag { color: var(--accent); border: 1px solid var(--border); border-radius: 8px;
               padding: 0 6px; font-size: var(--fs-xs) }
+  .mid, .re-tag { color: var(--dim); font-family: var(--mono); font-size: var(--fs-xs) }
+  .re-tag { color: var(--accent) }
+  .net { background: var(--bg-3); color: var(--fg); border: 1px solid var(--border);
+         border-radius: 6px; font-size: var(--fs-xs); padding: 3px 6px }
   .msg .body { white-space: pre-wrap; word-break: break-word; margin-top: 2px }
 
   /* agent output */

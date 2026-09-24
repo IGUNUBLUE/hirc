@@ -23,15 +23,28 @@ learn the protocol automatically. Agents without skill support can run
 hirc whoami                     your address + status
 hirc nick backend-api           register a memorable name
 hirc list                       roster of live agents
-hirc send reviewer "msg"        fire-and-forget DM
+hirc send reviewer "msg"        fire-and-forget DM (durable — lands in mail/)
 hirc send '#workspace' "msg"    channel: every agent in that workspace
                                 (member-only; agents can't post to other spaces)
 hirc send all "msg"             broadcast to everyone (costs each a turn)
+hirc reply <id> "msg"           reply by message id (threads the conversation)
+hirc inbox / check              durable unread mail / cheap "new mail?" probe
+hirc flush [to] [--if-idle]     deliver coalesced queues
 hirc ask wE:p1 "question?"      send + wait + print reply
 hirc send bob@workstation "hi"  remote agent via saved machine
 hirc read <to> / wait <to>      inspect / block on a peer
-hirc machines · log · skill
+hirc machines · log · stats · skill · mcp
 ```
+
+**Delivery semantics.** Messages to a `working`/`blocked` peer don't interrupt:
+they queue in `pending/` and flush as a single coalesced turn when the peer
+goes idle (the web daemon watches `pane.agent_status_changed` on the Herdr
+socket, plus a periodic sweep for panes already idle). `--now` overrides.
+Every message is appended to a per-sender append-only log (`mail/`) before
+delivery — that's the durable inbox `hirc inbox` reads.
+
+**MCP.** `hirc mcp` serves the whole CLI as MCP tools over stdio —
+`{"command": "hirc", "args": ["mcp"]}` in any MCP-capable client.
 
 ## First use — onboard your agents
 
