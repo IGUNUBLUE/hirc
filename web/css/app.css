@@ -1,0 +1,121 @@
+/* hirc web console — design tokens + components, zero framework. */
+
+@layer tokens, base, layout, components;
+
+@layer tokens {
+  :root {
+    --bg: #16161c; --bg-2: #1d1d26; --bg-3: #24242f;
+    --fg: #c9c7d0; --dim: #6b6b78; --border: #2e2e3c;
+    --accent: #7aa2f7;
+    --st-working: #d97757; --st-idle: #4c9a5a; --st-done: #6b9bd2;
+    --st-blocked: #c04a4a; --st-unknown: #907aa9;
+    --font: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    --fs: 13px; --fs-sm: 11px; --fs-xs: 10px;
+    --sp-1: 4px; --sp-2: 8px; --sp-3: 10px; --sp-4: 14px;
+    --r-sm: 4px; --r-md: 5px; --r-pill: 10px;
+  }
+}
+
+@layer base {
+  * { box-sizing: border-box; margin: 0 }
+  body { background: var(--bg); color: var(--fg); font: var(--fs)/1.45 var(--font);
+         height: 100vh; display: flex; flex-direction: column; overflow: hidden }
+  ::-webkit-scrollbar { width: 8px; height: 8px }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px }
+  ::-webkit-scrollbar-thumb:hover { background: var(--dim) }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: -1px }
+  button { font: inherit; cursor: pointer }
+  input { font: inherit }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important } }
+}
+
+@layer layout {
+  .topbar { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-2) var(--sp-4);
+            background: var(--bg-2); border-bottom: 1px solid var(--border) }
+  .topbar .spacer { flex: 1 }
+  main { flex: 1; display: grid; grid-template-columns: 260px 1fr; min-height: 0 }
+  .content { display: flex; flex-direction: column; min-width: 0; min-height: 0 }
+  @media (max-width: 720px) { main { grid-template-columns: 1fr } .roster { display: none } }
+}
+
+@layer components {
+  .brand { color: var(--accent); font-size: 15px }
+  .host, .dim, .hint { color: var(--dim) } .hint { font-size: var(--fs-sm) }
+  .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--st-blocked); transition: background .3s }
+  .conn.on { background: var(--st-idle) }
+  .blocked-chip { background: var(--st-blocked); color: #fff; padding: 1px 8px;
+                  border-radius: var(--r-pill); font-size: var(--fs-sm); font-weight: bold }
+  .icon-btn { background: none; border: 1px solid var(--border); color: var(--dim);
+              border-radius: var(--r-sm); padding: 3px 8px; transition: color .15s, border-color .15s }
+  .icon-btn.on, .icon-btn:hover { color: var(--st-working); border-color: var(--st-working) }
+
+  /* roster */
+  .roster { border-right: 1px solid var(--border); overflow-y: auto; background: var(--bg-2) }
+  .ws { position: sticky; top: 0; padding: 9px 10px 4px; color: var(--dim); font-size: var(--fs-xs);
+        text-transform: uppercase; letter-spacing: .07em; background: var(--bg-2);
+        display: flex; gap: 6px; border-top: 1px solid var(--border); z-index: 1 }
+  .ws-group:first-child .ws { border-top: 0 }
+  .ws .focus { color: var(--accent) }
+  .agt { padding: 6px 10px; cursor: pointer; display: flex; gap: 8px; align-items: center;
+         transition: background .12s }
+  .agt:hover { background: var(--bg-3) }
+  .agt.sel { background: var(--bg-3); box-shadow: inset 2px 0 0 var(--accent) }
+  .badge { width: 22px; height: 22px; border-radius: var(--r-md); display: flex; flex: none;
+           align-items: center; justify-content: center; font-size: var(--fs-xs); font-weight: bold; color: #fff }
+  .badge img { width: 15px; height: 15px; filter: brightness(0) invert(1) }
+  .agt .mid { min-width: 0; flex: 1 }
+  .addr { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+  .sub { color: var(--dim); font-size: var(--fs-xs); display: flex; gap: 5px; align-items: center }
+  .st { width: 6px; height: 6px; border-radius: 50%; display: inline-block }
+  .st.working { background: var(--st-working); animation: pulse 1.2s infinite }
+  .st.idle { background: var(--st-idle) } .st.done { background: var(--st-done) }
+  .st.blocked { background: var(--st-blocked) } .st.unknown { background: var(--st-unknown) }
+  @keyframes pulse { 50% { opacity: .35 } }
+  .unread { background: var(--accent); color: #fff; border-radius: 9px;
+            font-size: var(--fs-xs); padding: 0 6px; font-weight: bold }
+  .empty { color: var(--dim); font-size: var(--fs-sm); padding: var(--sp-3) }
+
+  /* conversation chips */
+  .chips { display: flex; gap: 6px; padding: 7px var(--sp-4); background: var(--bg-2);
+           border-bottom: 1px solid var(--border); overflow-x: auto; flex: none }
+  .chip { border: 1px solid var(--border); border-radius: 11px; padding: 2px 10px;
+          font-size: var(--fs-sm); color: var(--dim); cursor: pointer; white-space: nowrap;
+          user-select: none; transition: color .12s, border-color .12s }
+  .chip:hover { color: var(--fg) }
+  .chip.on { color: var(--accent); border-color: var(--accent) }
+
+  /* feed */
+  .feed { flex: 1.15; overflow-y: auto; padding: var(--sp-3) var(--sp-4);
+          border-bottom: 1px solid var(--border) }
+  .msg { margin-bottom: var(--sp-3); padding-left: var(--sp-3); border-left: 2px solid var(--border) }
+  .msg:hover { border-left-color: var(--dim) }
+  .msg .meta { color: var(--dim); font-size: var(--fs-sm); display: flex; gap: 8px; align-items: center; flex-wrap: wrap }
+  .msg .time { opacity: .7 }
+  .msg .who { display: inline-flex; gap: 5px; align-items: center }
+  .msg .from { color: var(--accent) } .msg .to { color: var(--st-working) }
+  .msg .to.human { color: var(--st-idle) }
+  .msg .arrow { opacity: .5 }
+  .mini-badge { display: inline-flex; width: 15px; height: 15px; border-radius: 3px;
+                align-items: center; justify-content: center; font-size: 8px; font-weight: bold; color: #fff }
+  .msg .receipt { opacity: .8 } .msg .receipt.bad { color: var(--st-blocked); opacity: 1 }
+  .msg .body { white-space: pre-wrap; word-break: break-word; margin-top: 2px }
+
+  /* agent output */
+  .out { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-4); background: var(--bg-2);
+         color: #a9a7b8; font-size: 12px }
+  .out .hdr { color: var(--dim); font-size: var(--fs-sm); margin-bottom: 6px }
+  .out .tail { white-space: pre-wrap; word-break: break-word; font: inherit }
+
+  /* composer */
+  .receipt-line { font-size: var(--fs-sm); padding: 0 var(--sp-4) 8px; color: var(--dim); background: var(--bg-2) }
+  .composer { display: flex; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4);
+              border-top: 1px solid var(--border); background: var(--bg-2) }
+  .composer input { background: var(--bg-3); border: 1px solid var(--border); color: var(--fg);
+                    padding: 7px 10px; border-radius: var(--r-sm) }
+  .composer input:focus { border-color: var(--accent); outline: none }
+  #to, .composer input[list] { width: 190px }
+  .composer input[aria-label="message"] { flex: 1 }
+  .composer button { background: var(--bg-3); border: 1px solid var(--border); color: var(--accent);
+                     padding: 7px 14px; border-radius: var(--r-sm); transition: border-color .15s }
+  .composer button:hover { border-color: var(--accent) }
+}

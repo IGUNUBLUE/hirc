@@ -100,9 +100,12 @@ class Api(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path in ("/", "/index.html"):
             return self._file(os.path.join(WEB_ROOT, "index.html"), "text/html; charset=utf-8")
-        if m := re.fullmatch(r"/icons/([a-z0-9_-]+)\.svg", u.path):
-            return self._file(os.path.join(WEB_ROOT, "icons", m.group(1) + ".svg"),
-                              "image/svg+xml")
+        if m := re.fullmatch(r"/(icons|css|js|vendor)/([\w.-]+)", u.path):
+            ctype = {".svg": "image/svg+xml", ".css": "text/css; charset=utf-8",
+                     ".js": "text/javascript; charset=utf-8"}.get(
+                     os.path.splitext(m.group(2))[1])
+            if ctype:
+                return self._file(os.path.join(WEB_ROOT, m.group(1), m.group(2)), ctype)
         if u.path == "/api/state":
             rc, out, _ = run(["list", "--json"])
             try:
