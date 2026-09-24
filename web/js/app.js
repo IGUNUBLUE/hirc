@@ -30,7 +30,16 @@ PetiteVue.createApp({
   // ---- lifecycle ----
   init() {
     this.poll();
-    this._timers = [setInterval(() => this.poll(), 2500), setInterval(() => this.tail(), 3000)];
+    // SSE push: roster/feed changes arrive instantly; slow poll as fallback
+    const es = new EventSource('/api/events');
+    let deb;
+    es.onmessage = e => {
+      clearTimeout(deb);
+      deb = setTimeout(() => this.poll(), 250);
+      this.online = true;
+    };
+    es.onerror = () => { this.online = false; };
+    this._timers = [setInterval(() => this.poll(), 30000), setInterval(() => this.tail(), 3000)];
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.poll(); });
     document.addEventListener('keydown', e => {
       if (e.key === '/' && !/INPUT|TEXTAREA/.test(e.target.tagName)) {

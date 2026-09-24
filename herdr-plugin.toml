@@ -34,6 +34,12 @@ command = ["bash", "scripts/install.sh"]
 [[startup]]
 command = ["bash", "scripts/web-daemon.sh", "start"]
 
+# Watchdog: any newly detected agent re-ensures the daemon is alive (the daemon
+# owns the socket subscription that flushes coalesced mail on idle).
+[[events]]
+on = "pane.agent_detected"
+command = ["bash", "scripts/web-daemon.sh", "start"]
+
 # roster — live view of every reachable agent: address, kind, state, location.
 [[actions]]
 id = "roster"

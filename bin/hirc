@@ -9,27 +9,35 @@ Ops:
   hirc whoami                     your address (name or pane id) + status
   hirc list                       roster of live agents on this server
   hirc nick <name>                register a memorable name for your pane
-  hirc send <to> <message...>     fire-and-forget message (`to` = name, pane id, `all`)
+  hirc send <to> <message...>     message (`to` = name, pane id, '#channel', 'all')
+                                  busy peers get one coalesced turn on idle; --now overrides
+  hirc reply <id> <message...>    reply to a message by its id
+  hirc inbox [--peek|--all]       read your durable mail; marks it seen
+  hirc check                      exit 0 when new mail is waiting (cheap)
+  hirc flush [to]                 deliver queued coalesced messages now
   hirc ask <to> <message...>      send, wait for the peer to settle, print its reply
   hirc read <to>                  tail a peer's output
   hirc wait <to>                  block until the peer settles
   hirc machines                   saved SSH machine profiles
-  hirc log                        local send/delivery log
+  hirc log [--all]                local send/delivery log
   hirc skill                      print the agent skill doc (protocol)
 """
 
 import json
 import os
 import re
+import secrets
 import socket
 import subprocess
 import sys
 import time
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}$")
 STATE_DIR = os.path.expanduser("~/.local/state/herdr/plugins/hirc")
 LOG_FILE = os.path.join(STATE_DIR, "messages.jsonl")
+MAIL_DIR = os.path.join(STATE_DIR, "mail")
+PEND_DIR = os.path.join(STATE_DIR, "pending")
 SKILL_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "skills", "hirc", "SKILL.md")
 
 
@@ -68,11 +76,17 @@ def hostname():
     return socket.gethostname().split(".")[0] or "local"
 
 
+_ROSTER_CACHE = {}
+
+
 def roster(machine=None):
+    if machine in _ROSTER_CACHE:
+        return _ROSTER_CACHE[machine]
     ok, data, err = herdr(["agent", "list"], machine=machine)
     if not ok:
         die(f"cannot list agents: {err.get('code')} — {err.get('message')}")
-    return data.get("agents", [])
+    _ROSTER_CACHE[machine] = data.get("agents", [])
+    return _ROSTER_CACHE[machine]
 
 
 def agent_addr(entry):
@@ -106,14 +120,141 @@ def split_target(target, default_machine):
     return target, default_machine
 
 
-def envelope(body):
-    """Self-documenting wire format: routing header + reply hint + body."""
-    sender = my_address()
-    reply_addr = sender if "@" in sender else f"{sender}@{hostname()}"
-    return f"[hirc from {reply_addr} — reply: hirc send '{reply_addr}' \"msg\"]\n{body}"
+def envelope(msg):
+    """Self-documenting wire format: id + routing header + reply hint + body."""
+    reply_addr = msg["from"] if "@" in msg["from"] else f"{msg['from']}@{hostname()}"
+    head = f"[hirc {msg['id']} from {reply_addr} — reply: hirc reply {msg['id']} \"msg\"]"
+    if msg.get("reply_to"):
+        head = head.replace(" from ", f" re:{msg['reply_to']} from ")
+    return f"{head}\n{msg['body']}"
 
 
 HUMAN_ALIASES = {"human", "user", "me", "you"}
+
+
+# --- durable mail layer ------------------------------------------------------
+# SAMP-style: one append-only outbox file per writer (mail/out-<addr>.jsonl),
+# so concurrent writers never race. Readers union all files and track a
+# watermark (.seen-<me>.json). mail/ survives restarts — that IS the inbox.
+
+def _fname(addr):
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", addr)
+
+
+def new_msg(to, body, channel=None, reply_to=None):
+    m = {"id": secrets.token_hex(3), "ts": time.time(),
+         "from": my_address(), "to": to, "body": body}
+    if channel:
+        m["channel"] = channel
+    if reply_to:
+        m["reply_to"] = reply_to
+    return m
+
+
+def mail_append(m):
+    try:
+        os.makedirs(MAIL_DIR, exist_ok=True)
+        path = os.path.join(MAIL_DIR, f"out-{_fname(addr_base(m['from']))}.jsonl")
+        with open(path, "a") as f:
+            f.write(json.dumps(m) + "\n")
+    except OSError:
+        pass
+
+
+def mail_scan():
+    """All mail messages, oldest first."""
+    try:
+        files = sorted(os.listdir(MAIL_DIR))
+    except OSError:
+        return []
+    out = []
+    for fn in files:
+        if not fn.startswith("out-"):
+            continue
+        try:
+            for line in open(os.path.join(MAIL_DIR, fn)):
+                try:
+                    out.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+        except OSError:
+            pass
+    return sorted(out, key=lambda m: m.get("ts", 0))
+
+
+def mail_find(id_prefix):
+    for m in mail_scan():
+        if m.get("id", "").startswith(id_prefix):
+            return m
+    return None
+
+
+def _seen_file(me):
+    return os.path.join(MAIL_DIR, f".seen-{_fname(me)}.json")
+
+
+def seen_ts(me):
+    try:
+        return json.load(open(_seen_file(me))).get("ts", 0)
+    except (OSError, json.JSONDecodeError):
+        return 0
+
+
+def mark_seen(me, ts):
+    try:
+        os.makedirs(MAIL_DIR, exist_ok=True)
+        with open(_seen_file(me), "w") as f:
+            json.dump({"ts": ts}, f)
+    except OSError:
+        pass
+
+
+def my_inbox_addr():
+    """Who 'me' is for inbox purposes: pane identity, HIRC_FROM, or the human."""
+    if not os.environ.get("HERDR_PANE_ID") and not os.environ.get("HIRC_FROM"):
+        return "human"
+    return addr_base(my_address())
+
+
+# --- pending (coalescing) ----------------------------------------------------
+# Messages to a busy peer accumulate in pending/<target>.jsonl and flush as ONE
+# merged turn when the peer goes idle (or on the next send/flush to it).
+
+def pend_append(m):
+    try:
+        os.makedirs(PEND_DIR, exist_ok=True)
+        with open(os.path.join(PEND_DIR, _fname(m["to"]) + ".jsonl"), "a") as f:
+            f.write(json.dumps(m) + "\n")
+    except OSError:
+        pass
+
+
+def pend_drain(target):
+    """Pop all pending messages for a target."""
+    path = os.path.join(PEND_DIR, _fname(target) + ".jsonl")
+    try:
+        msgs = [json.loads(l) for l in open(path)]
+        os.unlink(path)
+        return msgs
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def pend_all():
+    try:
+        return [f[:-6] for f in os.listdir(PEND_DIR) if f.endswith(".jsonl")]
+    except OSError:
+        return []
+
+
+def merged_envelope(msgs):
+    """One or many pending messages → a single prompt payload."""
+    if len(msgs) == 1:
+        return envelope(msgs[0])
+    lines = [f"[hirc {msgs[-1]['id']} — {len(msgs)} messages — reply to any with: hirc reply <id> \"msg\"]"]
+    for m in msgs:
+        lines.append(f"--- {m['id']} from {m['from']}: {m['body']}")
+    return "\n".join(lines)
 
 
 def log_msg(direction, target, body, result, machine=None, channel=None):
@@ -231,8 +372,38 @@ def cmd_nick(args):
     print(f"you are now '{name}' — peers reach you with: hirc send {name} \"...\"")
 
 
+def agent_status(addr, machine=None):
+    """Live status of a local target, or None."""
+    base = addr_base(addr)
+    for a in roster(machine):
+        if base in (a.get("name"), a.get("pane_id")):
+            return a.get("agent_status")
+    return None
+
+
+def send_to(name, mach, body, channel=None, reply_to=None, defer=True):
+    """Append to durable mail, then deliver now or queue for coalesced flush."""
+    where = f"{name}@{mach}" if mach else name
+    m = new_msg(where, body, channel, reply_to)
+    mail_append(m)
+    if name in HUMAN_ALIASES and not mach:
+        log_msg("in", "human", body, "delivered", channel=channel)
+        print("delivered → human (web feed at http://127.0.0.1:9344)")
+        return
+    status = agent_status(name) if not mach else None
+    if defer and not mach and status in ("working", "blocked"):
+        pend_append(m)
+        print(f"queued → {where}  (busy — coalesces into one turn on idle; --now overrides)")
+        log_msg("out", where, body, "queued", mach, channel=channel)
+        return
+    msgs = pend_drain(name) + [m]
+    receipt, detail = deliver(name, merged_envelope(msgs), mach)
+    print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))
+    log_msg("out", where, body, receipt, mach, channel=channel)
+
+
 def cmd_send(args):
-    text = envelope(" ".join(args.message))
+    body = " ".join(args.message)
     mine = os.environ.get("HERDR_PANE_ID")
     targets, channel = [], None
     if args.to == "all":
@@ -257,31 +428,127 @@ def cmd_send(args):
     else:
         targets = [split_target(args.to, args.machine)]
     for name, mach in targets:
-        if name in HUMAN_ALIASES and not mach:
-            # human mailbox: web UI reads these from the log
-            log_msg("in", "human", " ".join(args.message), "delivered", channel=channel)
-            print("delivered → human (web feed at http://127.0.0.1:9344)")
+        send_to(name, mach, body, channel, defer=not args.now)
+
+
+def cmd_reply(args):
+    orig = mail_find(args.msg_id)
+    if not orig:
+        die(f"message '{args.msg_id}' not in local mail — reply with: "
+            "hirc send '<from-addr>' \"msg\" (address is in the [hirc ... from ...] header)")
+    target = orig["from"] if "@" in orig["from"] else orig["from"]
+    name, mach = split_target(target, None)
+    send_to(name, mach, " ".join(args.message), reply_to=orig["id"], defer=not args.now)
+
+
+def cmd_inbox(args):
+    me = my_inbox_addr()
+    seen = 0 if args.all else seen_ts(me)
+    msgs = [m for m in mail_scan()
+            if addr_base(m.get("to")) == me and m.get("ts", 0) > seen]
+    if not msgs:
+        print("(no new mail)" if not args.all else "(inbox empty)")
+        return
+    latest = seen
+    for m in msgs:
+        ts = time.strftime("%H:%M:%S", time.localtime(m["ts"]))
+        tag = f" · #{m['channel']}" if m.get("channel") else ""
+        tag += f" · re:{m['reply_to']}" if m.get("reply_to") else ""
+        print(f"[{m['id']}] {ts} {m['from']}{tag}:")
+        print(f"  {m['body']}")
+        latest = max(latest, m["ts"])
+    if not args.peek:
+        mark_seen(me, latest)
+
+
+def cmd_check(_args):
+    """Cheap mail check — mtime short-circuit, ~0 work when nothing changed."""
+    me = my_inbox_addr()
+    cache_file = os.path.join(MAIL_DIR, f".check-{_fname(me)}.json")
+    try:
+        max_mtime = max((os.stat(os.path.join(MAIL_DIR, f)).st_mtime
+                         for f in os.listdir(MAIL_DIR) if f.startswith("out-")),
+                        default=0)
+    except OSError:
+        max_mtime = 0
+    try:
+        cache = json.load(open(cache_file))
+    except (OSError, json.JSONDecodeError):
+        cache = {}
+    if cache.get("max_mtime") == max_mtime:
+        n = cache.get("n", 0)
+    else:
+        seen = seen_ts(me)
+        n = sum(1 for m in mail_scan()
+                if addr_base(m.get("to")) == me and m.get("ts", 0) > seen)
+        try:
+            os.makedirs(MAIL_DIR, exist_ok=True)
+            with open(cache_file, "w") as f:
+                json.dump({"max_mtime": max_mtime, "n": n}, f)
+        except OSError:
+            pass
+    print(f"{n} new" if n else "no new mail")
+    sys.exit(0 if n else 1)
+
+
+def flush_keys(target):
+    """A pending queue can be keyed by name or pane id — drain both."""
+    keys = {addr_base(target)}
+    for a in roster():
+        if addr_base(target) in (a.get("name"), a.get("pane_id")):
+            keys |= {a.get("pane_id"), a.get("name")}
+    return keys - {None}
+
+
+def cmd_flush(args):
+    """Deliver queued (coalesced) messages for a target, or all targets."""
+    if args.to:
+        keys = flush_keys(args.to)
+        targets = sorted(k for k in keys if k in pend_all() or
+                         os.path.exists(os.path.join(PEND_DIR, _fname(k) + ".jsonl")))
+        if not targets:
+            print("(nothing pending)")
+            return
+    else:
+        targets = pend_all()
+        if not targets:
+            print("(nothing pending)")
+            return
+    for t in targets:
+        msgs = pend_drain(t)
+        if not msgs:
             continue
-        receipt, detail = deliver(name, text, mach)
-        where = f"{name}@{mach}" if mach else name
-        print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))
-        log_msg("out", where, " ".join(args.message), receipt, mach, channel=channel)
+        addr = msgs[0].get("to", t)  # file stem is sanitized; msg.to is the real address
+        if args.if_idle and agent_status(addr) in ("working", "blocked"):
+            for m in msgs:
+                pend_append(m)
+            continue
+        receipt, detail = deliver(addr, merged_envelope(msgs), None)
+        if not receipt.startswith("delivered"):   # keep pending durable on failure
+            for m in msgs:
+                pend_append(m)
+        print(f"{receipt} → {addr} ({len(msgs)} msg)" + (f"  ({detail})" if detail else ""))
+        log_msg("out", addr, f"[{len(msgs)} coalesced]", receipt)
 
 
 def cmd_ask(args):
     if args.to.startswith("#"):
         die("ask targets one agent — use send for channels")
     name, mach = split_target(args.to, args.machine)
-    text = envelope(" ".join(args.message))
+    where = f"{name}@{mach}" if mach else name
+    body = " ".join(args.message)
+    m = new_msg(where, body)
+    mail_append(m)
+    msgs = (pend_drain(name) if not mach else []) + [m]
+    text = merged_envelope(msgs)
     ms = args.timeout or 120000
     ok, _, err = herdr(["agent", "prompt", name, text, "--wait", "--timeout", str(ms)], machine=mach)
-    where = f"{name}@{mach}" if mach else name
     if not ok:
         code = err.get("code", "error")
         print(f"{'blocked' if code == 'agent_blocked' else f'failed:{code}'} → {where}  ({err.get('message','')})")
-        log_msg("out", where, " ".join(args.message), code, mach)
+        log_msg("out", where, body, code, mach)
         sys.exit(1)
-    log_msg("out", where, " ".join(args.message), "delivered+settled", mach)
+    log_msg("out", where, body, "delivered+settled", mach)
     ok, out, _ = herdr(["agent", "read", name, "--source", "recent-unwrapped", "--lines", str(args.lines)], machine=mach)
     print(out if ok else f"hirc: prompt settled but read failed — try: hirc read {where}")
 
@@ -382,7 +649,19 @@ def main():
     p = sub.add_parser("whoami", help="your address and status"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_whoami)
     p = sub.add_parser("list", help="roster of live agents"); common(p); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_list)
     p = sub.add_parser("nick", help="register a name for your pane"); p.add_argument("name"); p.set_defaults(fn=cmd_nick)
-    p = sub.add_parser("send", help="fire-and-forget message"); common(p, target=True); p.add_argument("message", nargs="+"); p.set_defaults(fn=cmd_send)
+    p = sub.add_parser("send", help="fire-and-forget message"); common(p, target=True)
+    p.add_argument("message", nargs="+"); p.add_argument("--now", action="store_true", help="deliver immediately even if the peer is busy (no coalescing)")
+    p.set_defaults(fn=cmd_send)
+    p = sub.add_parser("reply", help="reply to a message by id"); p.add_argument("msg_id"); p.add_argument("message", nargs="+")
+    p.add_argument("--now", action="store_true"); p.set_defaults(fn=cmd_reply)
+    p = sub.add_parser("inbox", help="show unread mail addressed to you (durable)")
+    p.add_argument("--peek", action="store_true", help="don't mark as read"); p.add_argument("--all", action="store_true", help="include already-read")
+    p.set_defaults(fn=cmd_inbox)
+    p = sub.add_parser("check", help="exit 0 if you have new mail (cheap)"); p.set_defaults(fn=cmd_check)
+    p = sub.add_parser("flush", help="deliver queued coalesced messages now")
+    p.add_argument("to", nargs="?", help="target (default: all pending)")
+    p.add_argument("--if-idle", action="store_true", help="skip targets that are still working/blocked")
+    p.set_defaults(fn=cmd_flush)
     p = sub.add_parser("ask", help="send and print the peer's reply"); common(p, target=True); p.add_argument("message", nargs="+"); p.add_argument("--timeout", type=int, help="ms to wait for the peer to settle (default 120000)"); p.add_argument("--lines", type=int, default=80); p.set_defaults(fn=cmd_ask)
     p = sub.add_parser("read", help="tail a peer's output"); common(p, target=True); p.add_argument("--lines", type=int, default=60); p.add_argument("--source", default="recent-unwrapped", choices=["visible", "recent", "recent-unwrapped", "detection"]); p.set_defaults(fn=cmd_read)
     p = sub.add_parser("wait", help="block until a peer settles"); common(p, target=True); p.add_argument("--until", action="append", help="status to wait for (repeatable)"); p.add_argument("--timeout", type=int, help="ms"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_wait)

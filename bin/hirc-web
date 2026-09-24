@@ -8,17 +8,24 @@ mailbox in hirc's log.
 
 Endpoints:
   GET  /api/state                    → {me, agents, workspaces, messages}
+  GET  /api/events                   → SSE stream (roster/feed change pushes)
   GET  /api/agent/<addr>/output      → {output}  (pane tail)
   GET  /api/machines                 → saved SSH profiles
   POST /api/send  {to, body}         → {receipts}
+
+The daemon is also the event engine: it subscribes to Herdr socket events and
+flushes coalesced pending mail when an agent goes idle.
 """
 
 import json
 import os
+import queue
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -27,9 +34,144 @@ PORT = int(os.environ.get("HIRC_PORT", "9344"))
 HOST = "127.0.0.1"
 STATE_DIR = os.path.expanduser("~/.local/state/herdr/plugins/hirc")
 LOG_FILE = os.path.join(STATE_DIR, "messages.jsonl")
+MAIL_DIR = os.path.join(STATE_DIR, "mail")
+PEND_DIR = os.path.join(STATE_DIR, "pending")
 WEB_ROOT = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "web")
 HIRC = shutil.which("hirc") or os.path.expanduser("~/.local/bin/hirc") \
     or os.path.join(os.path.dirname(os.path.realpath(__file__)), "hirc")
+SOCK = os.environ.get("HERDR_SOCKET_PATH") \
+    or os.path.expanduser("~/.config/herdr/herdr.sock")
+
+# pane-scoped subscriptions need an explicit pane_id (no wildcards), so the
+# subscription set is rebuilt from a fresh roster on every (re)connect;
+# layout.updated covers pane churn and triggers a resubscribe.
+GLOBAL_KINDS = ["layout.updated", "workspace.created", "workspace.closed",
+                "workspace.renamed", "workspace.focused"]
+
+
+# --- SSE client registry -----------------------------------------------------
+_sse = []
+_sse_lock = threading.Lock()
+
+
+def sse_push(kind, data=None):
+    dead = []
+    with _sse_lock:
+        for q in _sse:
+            try:
+                q.put_nowait({"type": kind, **(data or {})})
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _sse.remove(q)
+
+
+def _walk(obj):
+    """Yield every dict nested anywhere in a JSON value."""
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _walk(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk(v)
+
+
+def live_panes():
+    rc, out, _ = run(["list", "--json"], timeout=30)
+    try:
+        return {a["pane"] for a in json.loads(out)} if rc == 0 else set()
+    except (json.JSONDecodeError, KeyError):
+        return set()
+
+
+def handle_event(ev):
+    """One subscription_event line → 'resub' when the pane set may have changed."""
+    blob = None
+    for d in _walk(ev):
+        if isinstance(d.get("type"), str) and ("." in d["type"] or "_" in d["type"]):
+            blob = d
+            break
+    if not blob:
+        return None
+    kind = blob.get("type")
+    sse_push("roster", {"event": kind})
+    if kind == "pane_agent_status_changed" and blob.get("agent_status") == "idle":
+        pane = blob.get("pane_id")
+        if pane:
+            threading.Thread(target=run, args=(["flush", pane],),
+                             kwargs={"timeout": 20}, daemon=True).start()
+    return "resub" if kind == "layout_updated" else None
+
+
+def herdr_events():
+    """Persistent NDJSON subscription to the herdr socket; reconnects forever."""
+    backoff = 0.5
+    panes = set()
+    while True:
+        try:
+            fresh = live_panes()
+            subs = [{"type": t} for t in GLOBAL_KINDS] + \
+                   [{"type": "pane.agent_status_changed", "pane_id": p}
+                    for p in fresh]
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(120)
+            s.connect(SOCK)
+            s.sendall(json.dumps({
+                "id": "hirc-web", "method": "events.subscribe",
+                "params": {"subscriptions": subs},
+            }).encode() + b"\n")
+            f = s.makefile("r")
+            ack = f.readline()
+            if '"error"' in ack:
+                raise OSError(ack.strip())
+            panes = fresh
+            backoff = 0.5
+            sse_push("roster", {"event": "connected"})
+            for line in f:
+                try:
+                    if handle_event(json.loads(line)) == "resub":
+                        time.sleep(0.4)          # coalesce layout churn
+                        if live_panes() != panes:
+                            break                # reconnect with new pane set
+                except (json.JSONDecodeError, socket.timeout):
+                    pass
+        except OSError:
+            pass
+        time.sleep(backoff)
+        backoff = min(30, backoff * 2)
+        if not os.path.exists(SOCK):
+            backoff = 30
+
+
+def mail_watch():
+    """Push 'feed' on mail/log changes; sweep pending for already-idle agents
+    (the idle event only fires on transitions — a pane that was idle before a
+    flush trigger exists would hold its queue forever otherwise)."""
+    last = 0.0
+    sweep = 0
+    while True:
+        try:
+            mt = os.stat(LOG_FILE).st_mtime
+            mt = max(mt, max((os.stat(os.path.join(MAIL_DIR, f)).st_mtime
+                              for f in os.listdir(MAIL_DIR)), default=0))
+            mt = max(mt, max((os.stat(os.path.join(PEND_DIR, f)).st_mtime
+                              for f in os.listdir(PEND_DIR)), default=0))
+        except OSError:
+            mt = 0
+        if mt != last:
+            last = mt
+            sse_push("feed")
+        sweep += 1
+        if sweep >= 15:                       # ~22s
+            sweep = 0
+            try:
+                for stem in os.listdir(PEND_DIR):
+                    if stem.endswith(".jsonl"):
+                        run(["flush", "--if-idle", stem[:-6]], timeout=20)
+            except OSError:
+                pass
+        time.sleep(1.5)
 
 
 def run(args, env_extra=None, timeout=60):
@@ -107,6 +249,32 @@ class Api(BaseHTTPRequestHandler):
                      os.path.splitext(m.group(2))[1])
             if ctype:
                 return self._file(os.path.join(WEB_ROOT, m.group(1), m.group(2)), ctype)
+        if u.path == "/api/events":
+            q = queue.Queue(maxsize=200)
+            with _sse_lock:
+                _sse.append(q)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            try:
+                self.wfile.write(b": connected\n\n")
+                self.wfile.flush()
+                while True:
+                    try:
+                        ev = q.get(timeout=25)
+                        self.wfile.write(f"data: {json.dumps(ev)}\n\n".encode())
+                    except queue.Empty:
+                        self.wfile.write(b": hb\n\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                with _sse_lock:
+                    if q in _sse:
+                        _sse.remove(q)
+            return
         if u.path == "/api/state":
             rc, out, _ = run(["list", "--json"])
             try:
@@ -157,6 +325,9 @@ class Api(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     os.makedirs(STATE_DIR, exist_ok=True)
+    if os.path.exists(SOCK):
+        threading.Thread(target=herdr_events, daemon=True).start()
+    threading.Thread(target=mail_watch, daemon=True).start()
     srv = ThreadingHTTPServer((HOST, PORT), Api)
     print(f"hirc-web on http://{HOST}:{PORT}", file=sys.stderr)
     srv.serve_forever()
