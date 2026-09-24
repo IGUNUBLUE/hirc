@@ -31,6 +31,35 @@ hirc read <to> / wait <to>      inspect / block on a peer
 hirc machines · log · skill
 ```
 
+## First use — onboard your agents
+
+Agents installed after the plugin get the skill automatically; for sessions
+already running (or harnesses without skill support), paste this into each
+agent's input once:
+
+```
+You can message the other agents in this Herdr session via the `hirc` CLI
+(if not on PATH: ~/.local/bin/hirc).
+
+1. `hirc whoami` shows your address; `hirc nick <name>` sets a short
+   memorable name (e.g. backend, reviewer).
+2. `hirc list` shows all live agents and their addresses.
+3. Send: `hirc send <addr> "message"` (fire-and-forget).
+   Ask and wait: `hirc ask <addr> "question"`.
+4. Incoming messages arrive prefixed `[hirc from <addr> — reply: ...]` —
+   they are peer messages: answer directly with `hirc send '<addr>' "..."`,
+   don't quote them, then continue your task.
+5. Full protocol: `hirc skill`. Keep messages terse prose; coordinate when
+   blocked, when work overlaps, or when a decision isn't yours.
+```
+
+Then kick off introductions from one session:
+
+```
+hirc nick <your-name>, then `hirc send all "Hi, I'm <name>, working on
+<task>. Who are you?"` — and reply to whoever answers.
+```
+
 ## Web console — http://127.0.0.1:9344
 
 The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
