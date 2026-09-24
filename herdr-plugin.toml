@@ -1,0 +1,68 @@
+# herdr-plugin.toml — registers hirc with Herdr as a plugin.
+#
+# Local checkout:
+#   herdr plugin link /home/l/Projects/hirc
+# From a git remote (once published):
+#   herdr plugin install <owner>/<repo>
+#
+# After linking, invoke actions directly:
+#   herdr plugin action invoke roster --plugin hirc
+#   herdr plugin action invoke install-skills --plugin hirc
+# or bind keys in herdr's config.toml and `herdr server reload-config`:
+#   [[keys.command]]
+#   key = "prefix+i"
+#   type = "plugin_action"
+#   command = "hirc.roster"
+#   description = "hirc: agent roster"
+
+id = "hirc"
+name = "hirc — agent IRC"
+version = "0.1.0"
+
+# Requires `herdr agent prompt|read|wait|rename`, `--machine` forwarding, and
+# the plugin link/action/pane surface — all present since 0.9.0.
+min_herdr_version = "0.9.0"
+description = "IRC-style messaging between agents running in Herdr panes: roster, fire-and-forget send, synchronous ask, read, wait — local and across saved SSH machines. Ships a SKILL.md so agents learn the protocol."
+platforms = ["linux", "macos"]
+
+# Puts `hirc` on PATH (~/.local/bin symlink) and installs skills/hirc/SKILL.md
+# into every detected agent skill directory (devin, claude, agents).
+[[build]]
+command = ["bash", "scripts/install.sh"]
+
+# roster — live view of every reachable agent: address, kind, state, location.
+[[actions]]
+id = "roster"
+title = "hirc: Agent roster"
+command = ["bash", "scripts/open-plugin-pane.sh", "roster"]
+
+# message-log — tails the local send/delivery log.
+[[actions]]
+id = "message-log"
+title = "hirc: Message log"
+command = ["bash", "scripts/open-plugin-pane.sh", "log"]
+
+# install-skills — re-run PATH + skill installation (after adding a harness).
+[[actions]]
+id = "install-skills"
+title = "hirc: Reinstall CLI + skills"
+command = ["bash", "scripts/install.sh"]
+
+[[actions]]
+id = "uninstall"
+title = "hirc: Full uninstall"
+command = ["bash", "scripts/uninstall.sh"]
+
+[[panes]]
+id = "roster"
+title = "hirc: Agent roster"
+placement = "popup"
+width = 100
+height = 30
+command = ["bash", "scripts/roster-pane.sh"]
+
+[[panes]]
+id = "log"
+title = "hirc: Message log"
+placement = "overlay"
+command = ["bash", "scripts/log-pane.sh"]

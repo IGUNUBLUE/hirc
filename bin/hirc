@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""hirc — IRC-style messaging between agents running in Herdr panes.
+
+Wraps `herdr agent` commands. Agents are addressed by their live agent name
+(`herdr agent rename` / `herdr agent start <name>`) or by pane id (`wG:p1`).
+Append `@<machine>` or pass `--machine` to reach agents on a saved SSH machine.
+
+Ops:
+  hirc whoami                     your address (name or pane id) + status
+  hirc list                       roster of live agents on this server
+  hirc nick <name>                register a memorable name for your pane
+  hirc send <to> <message...>     fire-and-forget message (`to` = name, pane id, `all`)
+  hirc ask <to> <message...>      send, wait for the peer to settle, print its reply
+  hirc read <to>                  tail a peer's output
+  hirc wait <to>                  block until the peer settles
+  hirc machines                   saved SSH machine profiles
+  hirc log                        local send/delivery log
+  hirc skill                      print the agent skill doc (protocol)
+"""
+
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+import time
+
+VERSION = "0.1.0"
+NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}$")
+STATE_DIR = os.path.expanduser("~/.local/state/herdr/plugins/hirc")
+LOG_FILE = os.path.join(STATE_DIR, "messages.jsonl")
+SKILL_PATH = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "skills", "hirc", "SKILL.md")
+
+
+def die(msg, code=1):
+    print(f"hirc: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def herdr(args, machine=None, capture_text=False):
+    """Run a herdr CLI command. Returns (ok, parsed_or_text, error_dict)."""
+    cmd = ["herdr"] + (["--machine", machine] if machine else []) + args
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except FileNotFoundError:
+        die("`herdr` not found in PATH — hirc only works on a Herdr host")
+    except subprocess.TimeoutExpired:
+        return False, None, {"code": "timeout", "message": "herdr CLI timed out"}
+    out, err = p.stdout, p.stderr
+    for blob in (out, err):
+        blob = blob.strip()
+        if not blob:
+            continue
+        try:
+            data = json.loads(blob)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict) and "error" in data:
+            return False, None, data["error"]
+        return True, (data.get("result", data) if isinstance(data, dict) else data), None
+    if p.returncode != 0:
+        return False, None, {"code": "cli_error", "message": (err or out).strip() or f"exit {p.returncode}"}
+    return (True, out, None) if capture_text else (True, out, None)
+
+
+def hostname():
+    return socket.gethostname().split(".")[0] or "local"
+
+
+def roster(machine=None):
+    ok, data, err = herdr(["agent", "list"], machine=machine)
+    if not ok:
+        die(f"cannot list agents: {err.get('code')} — {err.get('message')}")
+    return data.get("agents", [])
+
+
+def agent_addr(entry):
+    return entry.get("name") or entry["pane_id"]
+
+
+def my_identity():
+    pane = os.environ.get("HERDR_PANE_ID")
+    if not pane:
+        return None
+    for a in roster():
+        if a.get("pane_id") == pane:
+            return a
+    return {"pane_id": pane, "agent": "?", "agent_status": "unknown"}
+
+
+def my_address():
+    me = my_identity()
+    return agent_addr(me) if me else f"user@{hostname()}"
+
+
+def split_target(target, default_machine):
+    """'name@machine' → (name, machine). '@local'/own hostname → local."""
+    if "@" in target:
+        name, _, mach = target.rpartition("@")
+        if mach in ("", "local", hostname()):
+            return name, default_machine
+        return name, mach
+    return target, default_machine
+
+
+def envelope(body):
+    """Self-documenting wire format: routing header + reply hint + body."""
+    sender = my_address()
+    reply_addr = sender if "@" in sender else f"{sender}@{hostname()}"
+    return f"[hirc from {reply_addr} — reply: hirc send '{reply_addr}' \"msg\"]\n{body}"
+
+
+def log_msg(direction, target, body, result, machine=None):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps({
+                "ts": int(time.time()), "dir": direction, "to": target,
+                "machine": machine or "local", "result": result, "body": body,
+            }) + "\n")
+    except OSError:
+        pass
+
+
+def deliver(target, text, machine=None):
+    """One fire-and-forget delivery. Returns (receipt, detail)."""
+    ok, _, err = herdr(["agent", "prompt", target, text], machine=machine)
+    if ok:
+        return "delivered", ""
+    code = err.get("code", "error")
+    return ("blocked" if code == "agent_blocked" else f"failed:{code}"), err.get("message", "")
+
+
+def cmd_whoami(args):
+    me = my_identity()
+    if not me:
+        die("not inside a Herdr-managed pane (HERDR_PANE_ID unset); no agent identity")
+    me = dict(me)
+    me["address"] = agent_addr(me)
+    me["machine"] = hostname()
+    if args.json:
+        print(json.dumps(me, indent=1))
+    else:
+        print(f"{me['address']}@{me['machine']}  ({me.get('agent')}, {me.get('agent_status')}, pane {me['pane_id']})")
+        if not me.get("name"):
+            print(f"no name registered — reachable as '{me['pane_id']}'; set one with: hirc nick <name>")
+
+
+def cmd_list(args):
+    agents = roster(machine=args.machine)
+    if args.json:
+        print(json.dumps([{
+            "address": agent_addr(a), "kind": a.get("agent"), "status": a.get("agent_status"),
+            "pane": a.get("pane_id"), "workspace": a.get("workspace_id"),
+            "cwd": a.get("cwd"), "title": a.get("terminal_title_stripped"),
+        } for a in agents], indent=1))
+        return
+    if not agents:
+        print("(no live agents)")
+        return
+    mine = os.environ.get("HERDR_PANE_ID")
+    print(f"{'ADDRESS':<22} {'KIND':<10} {'STATUS':<8} {'PANE':<8} CWD")
+    for a in agents:
+        addr = agent_addr(a) + (" (you)" if a.get("pane_id") == mine else "")
+        print(f"{addr:<22} {a.get('agent','?'):<10} {a.get('agent_status','?'):<8} {a.get('pane_id','?'):<8} {a.get('cwd','')}")
+
+
+def cmd_nick(args):
+    name = args.name
+    if not NAME_RE.match(name):
+        die(f"invalid name '{name}' — must match [a-z][a-z0-9_-]{{0,31}}")
+    pane = os.environ.get("HERDR_PANE_ID") or die("not inside a Herdr pane; cannot self-register")
+    ok, _, err = herdr(["agent", "rename", pane, name])
+    if not ok:
+        die(f"rename failed: {err.get('code')} — {err.get('message')}")
+    print(f"you are now '{name}' — peers reach you with: hirc send {name} \"...\"")
+
+
+def cmd_send(args):
+    text = envelope(" ".join(args.message))
+    targets = []
+    if args.to == "all":
+        mine = os.environ.get("HERDR_PANE_ID")
+        targets = [(agent_addr(a), args.machine) for a in roster(args.machine) if a.get("pane_id") != mine]
+        if not targets:
+            die("roster is empty — nobody to broadcast to")
+    else:
+        targets = [split_target(args.to, args.machine)]
+    for name, mach in targets:
+        receipt, detail = deliver(name, text, mach)
+        where = f"{name}@{mach}" if mach else name
+        print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))
+        log_msg("out", where, " ".join(args.message), receipt, mach)
+
+
+def cmd_ask(args):
+    name, mach = split_target(args.to, args.machine)
+    text = envelope(" ".join(args.message))
+    ms = args.timeout or 120000
+    ok, _, err = herdr(["agent", "prompt", name, text, "--wait", "--timeout", str(ms)], machine=mach)
+    where = f"{name}@{mach}" if mach else name
+    if not ok:
+        code = err.get("code", "error")
+        print(f"{'blocked' if code == 'agent_blocked' else f'failed:{code}'} → {where}  ({err.get('message','')})")
+        log_msg("out", where, " ".join(args.message), code, mach)
+        sys.exit(1)
+    log_msg("out", where, " ".join(args.message), "delivered+settled", mach)
+    ok, out, _ = herdr(["agent", "read", name, "--source", "recent-unwrapped", "--lines", str(args.lines)], machine=mach)
+    print(out if ok else f"hirc: prompt settled but read failed — try: hirc read {where}")
+
+
+def cmd_read(args):
+    name, mach = split_target(args.to, args.machine)
+    ok, out, err = herdr(["agent", "read", name, "--source", args.source, "--lines", str(args.lines)], machine=mach)
+    if not ok:
+        die(f"read failed: {err.get('code')} — {err.get('message')}")
+    sys.stdout.write(out if out.endswith("\n") else out + "\n")
+
+
+def cmd_wait(args):
+    name, mach = split_target(args.to, args.machine)
+    cmd = ["agent", "wait", name]
+    for u in args.until or []:
+        cmd += ["--until", u]
+    if args.timeout:
+        cmd += ["--timeout", str(args.timeout)]
+    ok, data, err = herdr(cmd, machine=mach)
+    if not ok:
+        die(f"wait failed: {err.get('code')} — {err.get('message')}")
+    print(json.dumps(data, indent=1) if args.json else f"{name}: settled")
+
+
+def cmd_machines(args):
+    ok, data, err = herdr(["machine", "list", "--json"])
+    if not ok:
+        die(f"machine list failed: {err.get('code')} — {err.get('message')}")
+    if not data:
+        print("(no saved machines — add one with: herdr machine add)")
+        return
+    if args.json:
+        print(json.dumps(data, indent=1))
+        return
+    for m in data:
+        print(f"{m.get('label') or m.get('id') or '?':<20} {m.get('ssh_target') or m.get('target') or ''}  enabled={m.get('enabled', '?')}")
+
+
+def cmd_log(args):
+    try:
+        lines = open(LOG_FILE).read().splitlines()[-args.lines:]
+    except OSError:
+        print("(no messages logged yet)")
+        return
+    for line in lines:
+        try:
+            m = json.loads(line)
+            ts = time.strftime("%H:%M:%S", time.localtime(m["ts"]))
+            body = m["body"] if len(m["body"]) <= 80 else m["body"][:77] + "..."
+            print(f"{ts}  {m['dir']} → {m['to']}  [{m['result']}]  {body}")
+        except (json.JSONDecodeError, KeyError):
+            print(line)
+
+
+def cmd_skill(_args):
+    try:
+        sys.stdout.write(open(SKILL_PATH).read())
+    except OSError:
+        die(f"skill doc not found at {SKILL_PATH}")
+
+
+def main():
+    import argparse
+    ap = argparse.ArgumentParser(prog="hirc", description="IRC-style messaging between Herdr agents",
+                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    ap.add_argument("--version", action="version", version=f"hirc {VERSION}")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def common(p, target=False, machine=True):
+        if machine:
+            p.add_argument("--machine", help="saved Herdr machine profile for remote agents")
+        if target:
+            p.add_argument("to", help="agent name, pane id, 'name@machine', or 'all'")
+
+    p = sub.add_parser("whoami", help="your address and status"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_whoami)
+    p = sub.add_parser("list", help="roster of live agents"); common(p); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_list)
+    p = sub.add_parser("nick", help="register a name for your pane"); p.add_argument("name"); p.set_defaults(fn=cmd_nick)
+    p = sub.add_parser("send", help="fire-and-forget message"); common(p, target=True); p.add_argument("message", nargs="+"); p.set_defaults(fn=cmd_send)
+    p = sub.add_parser("ask", help="send and print the peer's reply"); common(p, target=True); p.add_argument("message", nargs="+"); p.add_argument("--timeout", type=int, help="ms to wait for the peer to settle (default 120000)"); p.add_argument("--lines", type=int, default=80); p.set_defaults(fn=cmd_ask)
+    p = sub.add_parser("read", help="tail a peer's output"); common(p, target=True); p.add_argument("--lines", type=int, default=60); p.add_argument("--source", default="recent-unwrapped", choices=["visible", "recent", "recent-unwrapped", "detection"]); p.set_defaults(fn=cmd_read)
+    p = sub.add_parser("wait", help="block until a peer settles"); common(p, target=True); p.add_argument("--until", action="append", help="status to wait for (repeatable)"); p.add_argument("--timeout", type=int, help="ms"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_wait)
+    p = sub.add_parser("machines", help="saved SSH machine profiles"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_machines)
+    p = sub.add_parser("log", help="local send/delivery log"); p.add_argument("--lines", type=int, default=20); p.set_defaults(fn=cmd_log)
+    p = sub.add_parser("skill", help="print the agent skill doc"); p.set_defaults(fn=cmd_skill)
+
+    args = ap.parse_args()
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()
