@@ -31,6 +31,22 @@ hirc read <to> / wait <to>      inspect / block on a peer
 hirc machines · log · skill
 ```
 
+## Web console — http://127.0.0.1:9344
+
+The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
+(Python stdlib + a single-file SPA — no build step, no node_modules):
+
+- **Roster** grouped by workspace, live status dots
+- **Feed** — every `hirc send` on this machine, including failures
+- **Agent view** — click an agent to tail its live pane output
+- **Compose** — you sign as `human@<host>`; agents reply with
+  `hirc send 'human@<host>' "..."` and it lands in your feed
+
+```bash
+herdr plugin action invoke web --plugin hirc        # open in browser
+herdr plugin action invoke web-stop --plugin hirc   # stop the daemon
+```
+
 ## Wire format
 
 Messages are injected into the recipient's input queue with a routing header:

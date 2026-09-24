@@ -25,10 +25,14 @@ min_herdr_version = "0.9.0"
 description = "IRC-style messaging between agents running in Herdr panes: roster, fire-and-forget send, synchronous ask, read, wait — local and across saved SSH machines. Ships a SKILL.md so agents learn the protocol."
 platforms = ["linux", "macos"]
 
-# Puts `hirc` on PATH (~/.local/bin symlink) and installs skills/hirc/SKILL.md
-# into every detected agent skill directory (devin, claude, agents).
+# Puts `hirc`/`hirc-web` on PATH (~/.local/bin symlink) and installs
+# skills/hirc/SKILL.md into every detected agent skill directory.
 [[build]]
 command = ["bash", "scripts/install.sh"]
+
+# Starts the web console (http://127.0.0.1:9344) after every server start.
+[[startup]]
+command = ["bash", "scripts/web-daemon.sh", "start"]
 
 # roster — live view of every reachable agent: address, kind, state, location.
 [[actions]]
@@ -41,6 +45,17 @@ command = ["bash", "scripts/open-plugin-pane.sh", "roster"]
 id = "message-log"
 title = "hirc: Message log"
 command = ["bash", "scripts/open-plugin-pane.sh", "log"]
+
+# web — open the browser console (roster, feed, agent output, human compose).
+[[actions]]
+id = "web"
+title = "hirc: Open web UI"
+command = ["bash", "scripts/web-open.sh"]
+
+[[actions]]
+id = "web-stop"
+title = "hirc: Stop web UI"
+command = ["bash", "scripts/web-daemon.sh", "stop"]
 
 # install-skills — re-run PATH + skill installation (after adding a harness).
 [[actions]]

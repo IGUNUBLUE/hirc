@@ -8,9 +8,11 @@ PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # --- CLI on PATH ---
 mkdir -p "$HOME/.local/bin"
-ln -sfn "$PLUGIN_ROOT/bin/hirc" "$HOME/.local/bin/hirc"
-chmod +x "$PLUGIN_ROOT/bin/hirc"
-echo "hirc: CLI linked at $HOME/.local/bin/hirc"
+for bin in hirc hirc-web; do
+  ln -sfn "$PLUGIN_ROOT/bin/$bin" "$HOME/.local/bin/$bin"
+  chmod +x "$PLUGIN_ROOT/bin/$bin"
+done
+echo "hirc: CLI linked at $HOME/.local/bin/hirc (+hirc-web)"
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) echo "hirc: WARNING — $HOME/.local/bin is not on PATH" ;;

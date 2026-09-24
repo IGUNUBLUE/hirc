@@ -90,6 +90,8 @@ def my_identity():
 
 
 def my_address():
+    if os.environ.get("HIRC_FROM"):
+        return os.environ["HIRC_FROM"]
     me = my_identity()
     return agent_addr(me) if me else f"user@{hostname()}"
 
@@ -111,13 +113,17 @@ def envelope(body):
     return f"[hirc from {reply_addr} — reply: hirc send '{reply_addr}' \"msg\"]\n{body}"
 
 
+HUMAN_ALIASES = {"human", "user", "me", "you"}
+
+
 def log_msg(direction, target, body, result, machine=None):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         with open(LOG_FILE, "a") as f:
             f.write(json.dumps({
-                "ts": int(time.time()), "dir": direction, "to": target,
-                "machine": machine or "local", "result": result, "body": body,
+                "ts": int(time.time()), "dir": direction, "from": my_address(),
+                "to": target, "machine": machine or "local",
+                "result": result, "body": body,
             }) + "\n")
     except OSError:
         pass
@@ -188,6 +194,11 @@ def cmd_send(args):
     else:
         targets = [split_target(args.to, args.machine)]
     for name, mach in targets:
+        if name in HUMAN_ALIASES and not mach:
+            # human mailbox: web UI reads these from the log
+            log_msg("in", "human", " ".join(args.message), "delivered")
+            print("delivered → human (web feed at http://127.0.0.1:9344)")
+            continue
         receipt, detail = deliver(name, text, mach)
         where = f"{name}@{mach}" if mach else name
         print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))

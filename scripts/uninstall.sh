@@ -4,11 +4,15 @@ set -euo pipefail
 
 PLUGIN_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-link="$HOME/.local/bin/hirc"
-if [ -L "$link" ] && [ "$(readlink -f "$link")" = "$PLUGIN_ROOT/bin/hirc" ]; then
-  rm -f "$link"
-  echo "hirc: removed $link"
-fi
+"$PLUGIN_ROOT/scripts/web-daemon.sh" stop 2>/dev/null || true
+
+for bin in hirc hirc-web; do
+  link="$HOME/.local/bin/$bin"
+  if [ -L "$link" ] && [ "$(readlink -f "$link")" = "$PLUGIN_ROOT/bin/$bin" ]; then
+    rm -f "$link"
+    echo "hirc: removed $link"
+  fi
+done
 
 for base in \
   "$HOME/.config/devin/skills" \

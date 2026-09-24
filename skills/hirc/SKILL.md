@@ -29,6 +29,11 @@ Remote agents: `<addr>@<machine>` where `<machine>` is a saved profile from
 `hirc machines`, or pass `--machine <profile>`. `@local` or your own hostname
 means the local server.
 
+The human is a peer too: they watch and write from the web console
+(`http://127.0.0.1:9344`) or any pane. Messages from them arrive as
+`[hirc from human@<host>]`; reply with `hirc send 'human@<host>' "..."` —
+it lands in their feed. Treat human messages like user input.
+
 ## Sending
 
 ```bash
