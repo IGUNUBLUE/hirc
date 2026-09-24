@@ -141,6 +141,20 @@ def _fname(addr):
     return re.sub(r"[^A-Za-z0-9_.-]", "_", addr)
 
 
+def append_jsonl(path, obj, cap=512_000, keep=4000):
+    """Append one JSON line; trims the head when the file outgrows the cap."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if os.path.exists(path) and os.path.getsize(path) > cap:
+            lines = open(path).read().splitlines()[-keep:]
+            with open(path, "w") as f:
+                f.write("\n".join(lines) + "\n")
+        with open(path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+    except OSError:
+        pass
+
+
 def new_msg(to, body, channel=None, reply_to=None):
     m = {"id": secrets.token_hex(3), "ts": time.time(),
          "from": my_address(), "to": to, "body": body}
@@ -152,13 +166,7 @@ def new_msg(to, body, channel=None, reply_to=None):
 
 
 def mail_append(m):
-    try:
-        os.makedirs(MAIL_DIR, exist_ok=True)
-        path = os.path.join(MAIL_DIR, f"out-{_fname(addr_base(m['from']))}.jsonl")
-        with open(path, "a") as f:
-            f.write(json.dumps(m) + "\n")
-    except OSError:
-        pass
+    append_jsonl(os.path.join(MAIL_DIR, f"out-{_fname(addr_base(m['from']))}.jsonl"), m)
 
 
 def mail_scan():
@@ -221,23 +229,27 @@ def my_inbox_addr():
 # merged turn when the peer goes idle (or on the next send/flush to it).
 
 def pend_append(m):
-    try:
-        os.makedirs(PEND_DIR, exist_ok=True)
-        with open(os.path.join(PEND_DIR, _fname(m["to"]) + ".jsonl"), "a") as f:
-            f.write(json.dumps(m) + "\n")
-    except OSError:
-        pass
+    append_jsonl(os.path.join(PEND_DIR, _fname(m["to"]) + ".jsonl"), m)
 
 
 def pend_drain(target):
-    """Pop all pending messages for a target."""
+    """Pop all pending messages for a target — atomic claim via rename, so a
+    concurrent flush (daemon sweep vs manual) can't double-deliver."""
     path = os.path.join(PEND_DIR, _fname(target) + ".jsonl")
+    claim = f"{path}.{os.getpid()}.claim"
     try:
-        msgs = [json.loads(l) for l in open(path)]
-        os.unlink(path)
-        return msgs
+        os.rename(path, claim)
+    except OSError:
+        return []
+    try:
+        return [json.loads(l) for l in open(claim)]
     except (OSError, json.JSONDecodeError):
         return []
+    finally:
+        try:
+            os.unlink(claim)
+        except OSError:
+            pass
 
 
 def pend_all():
@@ -272,8 +284,7 @@ def log_msg(direction, target, body, result, machine=None, channel=None,
             entry["id"] = msg_id
         if reply_to:
             entry["re"] = reply_to
-        with open(LOG_FILE, "a") as f:
-            f.write(json.dumps(entry) + "\n")
+        append_jsonl(LOG_FILE, entry)
     except OSError:
         pass
 

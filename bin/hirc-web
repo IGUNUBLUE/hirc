@@ -34,6 +34,7 @@ PORT = int(os.environ.get("HIRC_PORT", "9344"))
 HOST = "127.0.0.1"
 STATE_DIR = os.path.expanduser("~/.local/state/herdr/plugins/hirc")
 LOG_FILE = os.path.join(STATE_DIR, "messages.jsonl")
+DLOG_FILE = os.path.join(STATE_DIR, "daemon.jsonl")   # internal health log
 MAIL_DIR = os.path.join(STATE_DIR, "mail")
 PEND_DIR = os.path.join(STATE_DIR, "pending")
 WEB_ROOT = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "web")
@@ -41,6 +42,25 @@ HIRC = shutil.which("hirc") or os.path.expanduser("~/.local/bin/hirc") \
     or os.path.join(os.path.dirname(os.path.realpath(__file__)), "hirc")
 SOCK = os.environ.get("HERDR_SOCKET_PATH") \
     or os.path.expanduser("~/.config/herdr/herdr.sock")
+
+_STATS = {"t0": time.time(), "events": 0, "flushes": 0, "reconnects": 0,
+          "sweeps": 0, "api_errors": 0, "last_event": None, "last_flush": None}
+
+
+def dlog(ev, **kw):
+    """Structured daemon log — the observability layer for spotting problems
+    (reconnect storms, failing flushes, api errors). Rotates like mail."""
+    _STATS["last_event"] = int(time.time())
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        if os.path.exists(DLOG_FILE) and os.path.getsize(DLOG_FILE) > 262_144:
+            lines = open(DLOG_FILE).read().splitlines()[-2000:]
+            with open(DLOG_FILE, "w") as f:
+                f.write("\n".join(lines) + "\n")
+        with open(DLOG_FILE, "a") as f:
+            f.write(json.dumps({"ts": int(time.time()), "ev": ev, **kw}) + "\n")
+    except OSError:
+        pass
 
 # pane-scoped subscriptions need an explicit pane_id (no wildcards), so the
 # subscription set is rebuilt from a fresh roster on every (re)connect;
@@ -77,12 +97,35 @@ def _walk(obj):
             yield from _walk(v)
 
 
+_state_cache = {"ts": 0.0, "data": None}
+
+
+def snapshot_state():
+    """Whole roster+workspaces via ONE `herdr api snapshot` socket call,
+    TTL-cached ~1.5s so SSE-triggered poll bursts collapse into one fetch."""
+    if _state_cache["data"] and time.time() - _state_cache["ts"] < 1.5:
+        return _state_cache["data"]
+    d, err = run_herdr(["api", "snapshot"])
+    if err or not isinstance(d, dict):
+        _STATS["api_errors"] += 1
+        dlog("api_error", op="snapshot", err=err)
+        return _state_cache["data"] or ([], [])
+    snap = d.get("snapshot", {})
+    agents = [{
+        "address": a.get("name") or a.get("pane_id"), "kind": a.get("agent"),
+        "status": a.get("agent_status"), "pane": a.get("pane_id"),
+        "workspace": a.get("workspace_id"),
+        "cwd": a.get("foreground_cwd") or a.get("cwd"),
+    } for a in snap.get("agents", [])]
+    workspaces = [{"workspace_id": w.get("workspace_id"), "label": w.get("label"),
+                   "focused": w.get("focused")} for w in snap.get("workspaces", [])]
+    _state_cache.update({"ts": time.time(), "data": (agents, workspaces)})
+    return agents, workspaces
+
+
 def live_panes():
-    rc, out, _ = run(["list", "--json"], timeout=30)
-    try:
-        return {a["pane"] for a in json.loads(out)} if rc == 0 else set()
-    except (json.JSONDecodeError, KeyError):
-        return set()
+    agents, _ = snapshot_state()
+    return {a["pane"] for a in agents if a.get("pane")}
 
 
 def handle_event(ev):
@@ -95,13 +138,20 @@ def handle_event(ev):
     if not blob:
         return None
     kind = blob.get("type")
+    _STATS["events"] += 1
     sse_push("roster", {"event": kind})
     if kind == "pane_agent_status_changed" and blob.get("agent_status") == "idle":
         pane = blob.get("pane_id")
         if pane:
-            threading.Thread(target=run, args=(["flush", pane],),
-                             kwargs={"timeout": 20}, daemon=True).start()
+            threading.Thread(target=_flush_idle, args=(pane,), daemon=True).start()
     return "resub" if kind == "layout_updated" else None
+
+
+def _flush_idle(pane):
+    rc, out, err = run(["flush", "--if-idle", pane], timeout=20)
+    _STATS["flushes"] += 1
+    _STATS["last_flush"] = int(time.time())
+    dlog("flush", pane=pane, rc=rc, out=(out or err).strip()[:200])
 
 
 def herdr_events():
@@ -127,6 +177,8 @@ def herdr_events():
                 raise OSError(ack.strip())
             panes = fresh
             backoff = 0.5
+            _STATS["reconnects"] += 1
+            dlog("subscribed", panes=len(fresh))
             sse_push("roster", {"event": "connected"})
             for line in f:
                 try:
@@ -136,8 +188,8 @@ def herdr_events():
                             break                # reconnect with new pane set
                 except (json.JSONDecodeError, socket.timeout):
                     pass
-        except OSError:
-            pass
+        except OSError as e:
+            dlog("sub_lost", err=str(e)[:200])
         time.sleep(backoff)
         backoff = min(30, backoff * 2)
         if not os.path.exists(SOCK):
@@ -168,7 +220,9 @@ def mail_watch():
             try:
                 for stem in os.listdir(PEND_DIR):
                     if stem.endswith(".jsonl"):
-                        run(["flush", "--if-idle", stem[:-6]], timeout=20)
+                        _STATS["sweeps"] += 1
+                        rc, out, err = run(["flush", "--if-idle", stem[:-6]], timeout=20)
+                        dlog("sweep", target=stem[:-6], rc=rc, out=(out or err).strip()[:200])
             except OSError:
                 pass
         time.sleep(1.5)
@@ -277,29 +331,26 @@ class Api(BaseHTTPRequestHandler):
                     if q in _sse:
                         _sse.remove(q)
             return
+        if u.path == "/api/health":
+            return self._json({**_STATS, "uptime_s": int(time.time() - _STATS["t0"]),
+                               "sse_clients": len(_sse), "ok": True})
         if u.path == "/api/state":
             machine = q.get("machine", [""])[0] or None
-            rc, out, _ = run(["list", "--json"] + (["--machine", machine] if machine else []))
-            try:
-                agents = json.loads(out) if rc == 0 else []
-            except json.JSONDecodeError:
-                agents = []
             if machine:
+                rc, out, _ = run(["list", "--json", "--machine", machine])
+                try:
+                    agents = json.loads(out) if rc == 0 else []
+                except json.JSONDecodeError:
+                    agents = []
                 for a in agents:
                     a["machine"] = machine
-            ws, _ = run_herdr((["--machine", machine] if machine else []) + ["workspace", "list"])
-            workspaces = (ws or {}).get("workspaces", []) if isinstance(ws, dict) else []
-            me = None
-            if not machine:
-                rc, me_out, _ = run(["whoami", "--json"])
-                if rc == 0:
-                    try:
-                        me = json.loads(me_out)
-                    except json.JSONDecodeError:
-                        pass
+                ws, _ = run_herdr(["--machine", machine, "workspace", "list"])
+                workspaces = (ws or {}).get("workspaces", []) if isinstance(ws, dict) else []
+            else:
+                agents, workspaces = snapshot_state()
             return self._json({
                 "agents": agents, "workspaces": workspaces, "machine": machine or "local",
-                "messages": read_log(), "me": me, "ts": int(time.time()),
+                "messages": read_log(), "me": None, "ts": int(time.time()),
             })
         if m := re.fullmatch(r"/api/agent/([^/]+)/output", u.path):
             lines = q.get("lines", ["120"])[0]
@@ -314,8 +365,22 @@ class Api(BaseHTTPRequestHandler):
             return self._json({"machines": machines})
         return self._json({"error": "not found"}, 404)
 
+    def _origin_ok(self):
+        """Localhost-only CSRF guard: browsers send Origin on cross-site POSTs;
+        CLI clients (curl) send none. Reject non-local origins so a random web
+        page can't inject 'human' messages into agents."""
+        o = self.headers.get("Origin") or self.headers.get("Referer")
+        if not o:
+            return True
+        return urlparse(o).hostname in ("127.0.0.1", "localhost", "::1")
+
     def do_POST(self):
         u = urlparse(self.path)
+        if not self._origin_ok():
+            _STATS["api_errors"] += 1
+            dlog("csrf_rejected", path=u.path,
+                 origin=self.headers.get("Origin", ""))
+            return self._json({"error": "forbidden origin"}, 403)
         if u.path == "/api/send":
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
@@ -326,6 +391,10 @@ class Api(BaseHTTPRequestHandler):
                 return self._json({"error": "missing to/body"}, 400)
             mach = (body.get("machine") or "").strip() or None
             rc, out, err = run(["send"] + (["--machine", mach] if mach else []) + [to, msg])
+            dlog("send", target=to, machine=mach, rc=rc,
+                 out=(out or err).strip()[:200])
+            if rc != 0:
+                _STATS["api_errors"] += 1
             receipts = [l for l in (out + err).splitlines() if l.strip()]
             return self._json({"ok": rc == 0, "receipts": receipts})
         return self._json({"error": "not found"}, 404)
