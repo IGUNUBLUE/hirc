@@ -132,6 +132,32 @@ def log_msg(direction, target, body, result, machine=None, channel=None):
         pass
 
 
+def my_workspace(machine=None):
+    """My pane's workspace_id, or None when not running inside a Herdr pane."""
+    mine = os.environ.get("HERDR_PANE_ID")
+    if not mine:
+        return None
+    for a in roster(machine):
+        if a.get("pane_id") == mine:
+            return a.get("workspace_id")
+    return None
+
+
+def addr_base(addr):
+    """'name@host' or 'name' → 'name'."""
+    return (addr or "?").split("@")[0]
+
+
+def ws_members(ws_id, machine=None):
+    """Set of name+pane_id addresses for agents in a workspace."""
+    out = set()
+    for a in roster(machine):
+        if a.get("workspace_id") == ws_id:
+            out.add(a.get("pane_id"))
+            out.add(a.get("name"))
+    return out - {None}
+
+
 def resolve_channel(name, machine=None):
     """'#label-or-id' → workspace dict. Exact, then prefix, then substring."""
     ok, data, err = herdr(["workspace", "list"], machine=machine)
@@ -214,9 +240,15 @@ def cmd_send(args):
                    for a in roster(args.machine) if a.get("pane_id") != mine]
         if not targets:
             die("roster is empty — nobody to broadcast to")
+        print(f"broadcast → {len(targets)} agents (each spends a turn — prefer '#channel' when team-scoped)")
     elif args.to.startswith("#"):
         ws = resolve_channel(args.to, args.machine)
         channel = ws["workspace_id"]
+        # channels are workspace-scoped: only members post (operators/humans exempt)
+        my_ws = my_workspace(args.machine)
+        if my_ws is not None and my_ws != channel:
+            die(f"not a member of #{ws.get('label') or channel} — "
+                "channels are scoped to their workspace")
         targets = [(agent_addr(a), args.machine)
                    for a in roster(args.machine)
                    if a.get("workspace_id") == channel and a.get("pane_id") != mine]
@@ -237,6 +269,8 @@ def cmd_send(args):
 
 
 def cmd_ask(args):
+    if args.to.startswith("#"):
+        die("ask targets one agent — use send for channels")
     name, mach = split_target(args.to, args.machine)
     text = envelope(" ".join(args.message))
     ms = args.timeout or 120000
@@ -289,11 +323,26 @@ def cmd_machines(args):
 
 def cmd_log(args):
     try:
-        lines = open(LOG_FILE).read().splitlines()[-args.lines:]
+        lines = open(LOG_FILE).read().splitlines()
     except OSError:
         print("(no messages logged yet)")
         return
-    for line in lines:
+    # agent panes see only their workspace's traffic + own DMs; --all or an
+    # operator shell (no pane) sees everything
+    if not args.all and os.environ.get("HERDR_PANE_ID"):
+        me, my_ws = my_address(), my_workspace()
+        members = ws_members(my_ws) if my_ws else set()
+        me_base = addr_base(me)
+
+        def visible(m):
+            if m.get("channel") == my_ws:
+                return True
+            frm, to = addr_base(m.get("from")), addr_base(m.get("to"))
+            if me_base in (frm, to):
+                return True
+            return frm in members and to in members
+        lines = [l for l in lines if _log_visible(l, visible)]
+    for line in lines[-args.lines:]:
         try:
             m = json.loads(line)
             ts = time.strftime("%H:%M:%S", time.localtime(m["ts"]))
@@ -301,6 +350,13 @@ def cmd_log(args):
             print(f"{ts}  {m['dir']} → {m['to']}  [{m['result']}]  {body}")
         except (json.JSONDecodeError, KeyError):
             print(line)
+
+
+def _log_visible(line, pred):
+    try:
+        return pred(json.loads(line))
+    except (json.JSONDecodeError, KeyError):
+        return True
 
 
 def cmd_skill(_args):
@@ -331,7 +387,9 @@ def main():
     p = sub.add_parser("read", help="tail a peer's output"); common(p, target=True); p.add_argument("--lines", type=int, default=60); p.add_argument("--source", default="recent-unwrapped", choices=["visible", "recent", "recent-unwrapped", "detection"]); p.set_defaults(fn=cmd_read)
     p = sub.add_parser("wait", help="block until a peer settles"); common(p, target=True); p.add_argument("--until", action="append", help="status to wait for (repeatable)"); p.add_argument("--timeout", type=int, help="ms"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_wait)
     p = sub.add_parser("machines", help="saved SSH machine profiles"); p.add_argument("--json", action="store_true"); p.set_defaults(fn=cmd_machines)
-    p = sub.add_parser("log", help="local send/delivery log"); p.add_argument("--lines", type=int, default=20); p.set_defaults(fn=cmd_log)
+    p = sub.add_parser("log", help="message log (agents see their workspace; --all = everything)")
+    p.add_argument("--lines", type=int, default=20); p.add_argument("--all", action="store_true", help="operator view: unscoped log")
+    p.set_defaults(fn=cmd_log)
     p = sub.add_parser("skill", help="print the agent skill doc"); p.set_defaults(fn=cmd_skill)
 
     args = ap.parse_args()

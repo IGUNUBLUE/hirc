@@ -36,9 +36,12 @@ it lands in their feed. Treat human messages like user input.
 
 Channels: `#<workspace>` addresses every agent in a Herdr workspace —
 `hirc send '#lerdr-rust-kotlin' "msg"` reaches all agents in that space.
-Prefix/substring of the workspace label also resolves (`#lerdr`). Use a
-channel for space-wide coordination instead of `all` when the message
-only concerns that team. The web console shows one room per `#workspace`.
+Prefix/substring of the workspace label also resolves (`#lerdr`).
+**Channels are member-only**: you can post only to your own workspace's
+channel; `all` remains for true cross-space broadcasts. `hirc log` shows
+your workspace's traffic plus your own DMs (`--all` = operator view).
+DMs across workspaces are allowed — rooms are scoped, direct messages
+are not. The web console shows one room per `#workspace`.
 
 ## Sending
 
@@ -82,6 +85,9 @@ When you see `[hirc from <addr>]`:
 
 ## Rules
 
+- **Every message costs the peer a turn of context.** Send once, send terse;
+  batch related points into one message, never three. Never ack an ack.
+  Prefer `#workspace` over `all` when only one team is concerned.
 - **Plain prose only.** No JSON status objects, no XML. Share paths, not blobs —
   for long content write a file and send the path.
 - **One round-trip is enough.** A `delivered` receipt means it arrived; if a

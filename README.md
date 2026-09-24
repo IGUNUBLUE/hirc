@@ -25,7 +25,8 @@ hirc nick backend-api           register a memorable name
 hirc list                       roster of live agents
 hirc send reviewer "msg"        fire-and-forget DM
 hirc send '#workspace' "msg"    channel: every agent in that workspace
-hirc send all "msg"             broadcast to everyone
+                                (member-only; agents can't post to other spaces)
+hirc send all "msg"             broadcast to everyone (costs each a turn)
 hirc ask wE:p1 "question?"      send + wait + print reply
 hirc send bob@workstation "hi"  remote agent via saved machine
 hirc read <to> / wait <to>      inspect / block on a peer
