@@ -82,6 +82,11 @@
         display: flex; gap: 6px; border-top: 1px solid var(--border); z-index: 1 }
   .ws-group:first-child .ws { border-top: 0 }
   .ws .focus { color: var(--accent) }
+  .ws.chan { cursor: pointer; text-transform: none; letter-spacing: 0; font-size: var(--fs-sm);
+             color: var(--fg); font-weight: 600 }
+  .ws.chan:hover { color: var(--accent) }
+  .ws.chan.on { color: var(--accent) }
+  .ws .hash { color: var(--dim); font-weight: normal }
   .agt { padding: 6px 10px; cursor: pointer; display: flex; gap: 8px; align-items: center;
          transition: background .12s }
   .agt:hover { background: var(--bg-3) }
@@ -133,6 +138,8 @@
   .mini-badge { display: inline-flex; width: 15px; height: 15px; border-radius: 3px;
                 align-items: center; justify-content: center; font-size: 8px; font-weight: bold; color: #fff }
   .msg .receipt { opacity: .8 } .msg .receipt.bad { color: var(--st-blocked); opacity: 1 }
+  .chan-tag { color: var(--accent); border: 1px solid var(--border); border-radius: 8px;
+              padding: 0 6px; font-size: var(--fs-xs) }
   .msg .body { white-space: pre-wrap; word-break: break-word; margin-top: 2px }
 
   /* agent output */

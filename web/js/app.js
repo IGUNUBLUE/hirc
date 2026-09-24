@@ -54,14 +54,26 @@ PetiteVue.createApp({
     }));
   },
   get pairs() {
-    const keys = this.messages.filter(m => /delivered/.test(m.result)).map(m =>
+    const keys = this.messages.filter(m => /delivered/.test(m.result) && !m.channel).map(m =>
       m.to === 'human' ? `${m.from}→human` : [m.from || '?', m.to].sort().join('↔'));
     return [...new Set(keys)].slice(-12);
   },
+  membersOf(wsId) {
+    return new Set(this.agents.filter(a => a.workspace === wsId).map(a => a.address));
+  },
+  msgInChannel(m, wsId) {
+    const mem = this.membersOf(wsId);
+    return m.channel === wsId || mem.has(m.from) || mem.has(m.to);
+  },
   get feed() {
-    const ms = this.filter === 'all' ? this.messages
-      : this.messages.filter(m => (m.to === 'human' ? `${m.from}→human` : [m.from || '?', m.to].sort().join('↔')) === this.filter);
-    return ms;
+    if (this.filter === 'all') return this.messages;
+    if (this.filter.startsWith('chan:'))
+      return this.messages.filter(m => this.msgInChannel(m, this.filter.slice(5)));
+    return this.messages.filter(m =>
+      (m.to === 'human' ? `${m.from}→human` : [m.from || '?', m.to].sort().join('↔')) === this.filter);
+  },
+  chanLabel(id) {
+    return this.workspaces.find(w => w.workspace_id === id)?.label || id;
   },
   get addrBook() { return ['all', 'human', ...this.agents.map(a => a.address)]; },
   get freshFeed() {
@@ -125,6 +137,12 @@ PetiteVue.createApp({
     this.setView('output');
   },
   setFilter(p) { this.filter = p; localStorage.hircFilter = p; },
+  openChannel(g) {
+    this.setFilter('chan:' + g.id);
+    this.to = '#' + g.label;
+    this.drawer = false;
+    this.setView('feed');
+  },
   async toggleBell() {
     this.notify = !this.notify;
     if (this.notify && Notification.permission !== 'granted')

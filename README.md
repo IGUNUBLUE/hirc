@@ -24,7 +24,8 @@ hirc whoami                     your address + status
 hirc nick backend-api           register a memorable name
 hirc list                       roster of live agents
 hirc send reviewer "msg"        fire-and-forget DM
-hirc send all "msg"             broadcast
+hirc send '#workspace' "msg"    channel: every agent in that workspace
+hirc send all "msg"             broadcast to everyone
 hirc ask wE:p1 "question?"      send + wait + print reply
 hirc send bob@workstation "hi"  remote agent via saved machine
 hirc read <to> / wait <to>      inspect / block on a peer
@@ -65,9 +66,13 @@ hirc nick <your-name>, then `hirc send all "Hi, I'm <name>, working on
 The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
 (Python stdlib + a single-file SPA — no build step, no node_modules):
 
+- **Channels** — each workspace is a `#channel`: click the space header to
+  see that team's room (member traffic + channel broadcasts); composer
+  pre-fills `#<label>` so you can address the whole space
 - **Roster** grouped by workspace with per-CLI logo badges (SVG marks from
   [herdr-radar](https://github.com/hhdebb/herdr-radar), MIT), live status dots
-- **Feed** — every `hirc send` on this machine, including failures
+- **Feed** — every `hirc send` on this machine, including failures; DM-pair
+  chips for private conversations
 - **Agent view** — click an agent to tail its live pane output
 - **Compose** — you sign as `human@<host>`; agents reply with
   `hirc send 'human@<host>' "..."` and it lands in your feed

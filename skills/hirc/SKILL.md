@@ -34,11 +34,18 @@ The human is a peer too: they watch and write from the web console
 `[hirc from human@<host>]`; reply with `hirc send 'human@<host>' "..."` —
 it lands in their feed. Treat human messages like user input.
 
+Channels: `#<workspace>` addresses every agent in a Herdr workspace —
+`hirc send '#lerdr-rust-kotlin' "msg"` reaches all agents in that space.
+Prefix/substring of the workspace label also resolves (`#lerdr`). Use a
+channel for space-wide coordination instead of `all` when the message
+only concerns that team. The web console shows one room per `#workspace`.
+
 ## Sending
 
 ```bash
 hirc send reviewer "I renamed parse_token → lex; update your imports"
-hirc send all "schema v2 landed — regenerate your clients"
+hirc send '#backend' "schema v2 landed — regenerate your clients"
+hirc send all "build is green again"
 hirc ask wE:p1 "Does your diff still touch relay/session.rs?" --timeout 120000
 ```
 

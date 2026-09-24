@@ -116,17 +116,39 @@ def envelope(body):
 HUMAN_ALIASES = {"human", "user", "me", "you"}
 
 
-def log_msg(direction, target, body, result, machine=None):
+def log_msg(direction, target, body, result, machine=None, channel=None):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
+        entry = {
+            "ts": int(time.time()), "dir": direction, "from": my_address(),
+            "to": target, "machine": machine or "local",
+            "result": result, "body": body,
+        }
+        if channel:
+            entry["channel"] = channel
         with open(LOG_FILE, "a") as f:
-            f.write(json.dumps({
-                "ts": int(time.time()), "dir": direction, "from": my_address(),
-                "to": target, "machine": machine or "local",
-                "result": result, "body": body,
-            }) + "\n")
+            f.write(json.dumps(entry) + "\n")
     except OSError:
         pass
+
+
+def resolve_channel(name, machine=None):
+    """'#label-or-id' → workspace dict. Exact, then prefix, then substring."""
+    ok, data, err = herdr(["workspace", "list"], machine=machine)
+    if not ok:
+        die(f"cannot list workspaces: {err.get('code')} — {err.get('message')}")
+    wss = data.get("workspaces", [])
+    want = name.lstrip("#").lower()
+    names = lambda w: (w.get("workspace_id", "").lower(), (w.get("label") or "").lower())
+    hit = [w for w in wss if want in names(w)]
+    if not hit:
+        hit = [w for w in wss if any(n.startswith(want) for n in names(w) if n)]
+    if not hit:
+        hit = [w for w in wss if any(want in n for n in names(w) if n)]
+    if len(hit) == 1:
+        return hit[0]
+    die(f"channel '#{want}' matched {len(hit)} workspaces — known: " +
+        ", ".join(f"#{w.get('label') or w['workspace_id']}" for w in wss))
 
 
 def deliver(target, text, machine=None):
@@ -185,24 +207,33 @@ def cmd_nick(args):
 
 def cmd_send(args):
     text = envelope(" ".join(args.message))
-    targets = []
+    mine = os.environ.get("HERDR_PANE_ID")
+    targets, channel = [], None
     if args.to == "all":
-        mine = os.environ.get("HERDR_PANE_ID")
-        targets = [(agent_addr(a), args.machine) for a in roster(args.machine) if a.get("pane_id") != mine]
+        targets = [(agent_addr(a), args.machine)
+                   for a in roster(args.machine) if a.get("pane_id") != mine]
         if not targets:
             die("roster is empty — nobody to broadcast to")
+    elif args.to.startswith("#"):
+        ws = resolve_channel(args.to, args.machine)
+        channel = ws["workspace_id"]
+        targets = [(agent_addr(a), args.machine)
+                   for a in roster(args.machine)
+                   if a.get("workspace_id") == channel and a.get("pane_id") != mine]
+        if not targets:
+            die(f"#{ws.get('label') or channel} has no agents to broadcast to")
     else:
         targets = [split_target(args.to, args.machine)]
     for name, mach in targets:
         if name in HUMAN_ALIASES and not mach:
             # human mailbox: web UI reads these from the log
-            log_msg("in", "human", " ".join(args.message), "delivered")
+            log_msg("in", "human", " ".join(args.message), "delivered", channel=channel)
             print("delivered → human (web feed at http://127.0.0.1:9344)")
             continue
         receipt, detail = deliver(name, text, mach)
         where = f"{name}@{mach}" if mach else name
         print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))
-        log_msg("out", where, " ".join(args.message), receipt, mach)
+        log_msg("out", where, " ".join(args.message), receipt, mach, channel=channel)
 
 
 def cmd_ask(args):

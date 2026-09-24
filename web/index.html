@@ -30,7 +30,11 @@
   <div class="backdrop" v-if="drawer" @click="drawer = false"></div>
   <aside class="roster" :class="{open: drawer}" aria-label="agents">
     <div class="ws-group" v-for="g in groups" :key="g.id">
-      <div class="ws"><span>{{ g.label }}</span><span class="focus" v-if="g.focused" title="focused workspace">●</span></div>
+      <div class="ws chan" :class="{on: filter==='chan:'+g.id}" @click="openChannel(g)"
+           role="button" tabindex="0" :title="'channel: every agent in ' + g.label">
+        <span class="hash">#</span><span>{{ g.label }}</span>
+        <span class="focus" v-if="g.focused" title="focused workspace">●</span>
+      </div>
       <div class="agt" v-for="a in g.agents" :key="a.pane"
            :class="{sel: a.address === sel}" @click="select(a)" role="button" tabindex="0"
            @keydown.enter="select(a)">
@@ -58,6 +62,8 @@
       </button>
       <nav class="chips" aria-label="conversations" v-if="view==='feed'">
         <span class="chip" :class="{on: filter==='all'}" @click="setFilter('all')">all</span>
+        <span class="chip" v-for="g in groups" :key="'c'+g.id"
+              :class="{on: filter==='chan:'+g.id}" @click="openChannel(g)">#{{ g.label }}</span>
         <span class="chip" v-for="p in pairs" :key="p" :class="{on: filter===p}" @click="setFilter(p)">{{ p }}</span>
       </nav>
     </nav>
@@ -74,6 +80,7 @@
             <span class="to" :class="{human: m.to==='human'}">{{ m.to }}</span>
           </span>
           <span class="receipt" :class="{bad: !isOk(m.result)}">[{{ m.result }}]</span>
+          <span class="chan-tag" v-if="m.channel">#{{ chanLabel(m.channel) }}</span>
         </div>
         <div class="body">{{ m.body }}</div>
       </div>
