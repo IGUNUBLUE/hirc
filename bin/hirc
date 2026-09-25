@@ -365,13 +365,53 @@ def resolve_channel(name, machine=None):
         ", ".join(f"#{w.get('label') or w['workspace_id']}" for w in wss))
 
 
+ACTIVITY_WAIT_MS = 5000
+_ENVELOPE_MID = re.compile(r"\[hirc ([0-9a-f]{6})")
+
+
+def _turn_started(target, machine=None):
+    """Briefly wait for post-submit activity. `agent prompt` only proves bytes
+    were written — not that the TUI actually submitted them."""
+    return herdr(["agent", "wait", target, "--until", "working",
+                  "--until", "blocked", "--timeout", str(ACTIVITY_WAIT_MS)],
+                 machine=machine)
+
+
+def _nudge_if_stuck(target, text, machine=None):
+    """Some TUIs swallow the encoded Enter and leave the envelope as a draft.
+    When no turn started, the pane is at a plain prompt (idle/done — never a
+    dialog state) and our header is still on screen, push Enter once."""
+    mid = _ENVELOPE_MID.search(text)
+    if not mid or agent_status(target, machine) not in ("idle", "done"):
+        return False
+    ok, out, _ = herdr(["agent", "read", target, "--source", "visible",
+                        "--lines", "25"], machine=machine)
+    if not (ok and mid.group(1) in out):
+        return False
+    nok, _, _ = herdr(["agent", "send-keys", target, "enter"], machine=machine)
+    return bool(nok)
+
+
 def deliver(target, text, machine=None):
     """One fire-and-forget delivery. Returns (receipt, detail)."""
     ok, _, err = herdr(["agent", "prompt", target, text], machine=machine)
-    if ok:
+    if not ok:
+        code = err.get("code", "error")
+        return ("blocked" if code == "agent_blocked" else f"failed:{code}"), err.get("message", "")
+    # prompt only proves bytes were written — some TUIs keep the draft in the
+    # composer and swallow the Enter. Confirm a turn started; when the header
+    # still sits on screen at an idle/done pane, nudge Enter once.
+    started, _, werr = _turn_started(target, machine)
+    if started:
         return "delivered", ""
-    code = err.get("code", "error")
-    return ("blocked" if code == "agent_blocked" else f"failed:{code}"), err.get("message", "")
+    if (werr or {}).get("code") == "agent_not_found":
+        return "failed:agent_not_found", (werr or {}).get("message", "")
+    if _nudge_if_stuck(target, text, machine):
+        started, _, _ = _turn_started(target, machine)
+        if started:
+            return "delivered", "composer nudge"
+        return "failed:stuck", "envelope sits in the composer — push Enter manually"
+    return "delivered", "unverified — no turn activity observed"
 
 
 def cmd_whoami(args):
@@ -655,6 +695,9 @@ def cmd_ask(args):
     text = merged_envelope(msgs)
     ms = args.timeout or 120000
     ok, _, err = herdr(["agent", "prompt", target, text, "--wait", "--timeout", str(ms)], machine=mach)
+    if not ok and err.get("code") == "agent_prompt_stalled" \
+            and _nudge_if_stuck(target, text, mach):
+        ok, _, err = herdr(["agent", "wait", target, "--timeout", str(ms)], machine=mach)
     if not ok:
         code = err.get("code", "error")
         print(f"{'blocked' if code == 'agent_blocked' else f'failed:{code}'} → {where}  ({err.get('message','')})")

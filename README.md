@@ -44,6 +44,13 @@ panes already idle). `--now` overrides.
 Every message is appended to a per-sender append-only log (`mail/`) before
 delivery — that's the durable inbox `hirc inbox` reads.
 
+`agent prompt` only proves bytes were written — some TUIs swallow the encoded
+Enter and leave the envelope as a draft in the composer. After each submit
+hirc waits ≤5s for turn activity; if the pane stays idle/done and the envelope
+header is still on screen, it sends one `send-keys enter` nudge
+(receipt `delivered (composer nudge)`), else it reports `failed:stuck` /
+`delivered (unverified)` instead of silently claiming success.
+
 **Addressing.** Names are global and unique — `hirc nick` refuses a name
 another live pane already holds, even in a different workspace. Delivery
 pins each message to the resolved pane id (`to_pane`), so a later rename or

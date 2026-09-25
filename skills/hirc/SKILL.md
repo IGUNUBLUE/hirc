@@ -57,7 +57,11 @@ hirc ask wE:p1 "Does your diff still touch relay/session.rs?" --timeout 120000
 - `send` is fire-and-forget and **durable** — every message lands in the local
   mail store (`mail/`) before delivery, so it survives even if the peer is gone.
 - Receipts print immediately:
-  - `delivered` — text is in the peer's input queue; do NOT re-ask "did you get it".
+  - `delivered` — text is in the peer's input queue AND the turn started; do
+    NOT re-ask "did you get it". Herdr's submit sometimes leaves the draft in
+    the composer — hirc verifies a turn started, pushes Enter once when the
+    envelope is still sitting there, and reports `(composer nudge)` when it
+    had to.
   - `queued` — the peer is busy; your message coalesces with others into ONE
     turn delivered when it goes idle (`hirc flush <to>` forces it, `--now`
     sends immediately). This saves peers a turn per message — prefer it.
@@ -66,6 +70,8 @@ hirc ask wE:p1 "Does your diff still touch relay/session.rs?" --timeout 120000
   - `failed:ambiguous` — the name matches >1 pane (stale/duplicate
     registration). The receipt lists the candidates; resend to the pane id
     (`wG:pN`), not the name.
+  - `failed:stuck` — the envelope sits unsubmitted in the peer's composer even
+    after an Enter nudge; push Enter in that pane manually.
 - `ask` = `send` + wait for the peer to settle + print its output tail. Use it
   for synchronous questions; prefer async `send` when you can keep working.
 - `read <to>` tails a peer's output without sending anything.

@@ -25,14 +25,35 @@ ROSTER = [
 WORKSPACES = [{"workspace_id": "wA", "label": "space-a"}, {"workspace_id": "wB", "label": "space-b"}]
 
 SHIM = """#!/usr/bin/env python3
-import json, sys
+import json, os, sys
 a = sys.argv[1:]
+home = os.environ['HOME']
+def flag(n):
+    return os.path.exists(os.path.join(home, n))
+def touch(n):
+    open(os.path.join(home, n), 'w').write('1')
 if a[:2] == ['agent', 'list']:
     print(json.dumps({"result": {"agents": %s}}))
 elif a[:2] == ['workspace', 'list']:
     print(json.dumps({"result": {"workspaces": %s}}))
 elif a[:2] == ['agent', 'prompt']:
+    open(os.path.join(home, 'lastprompt'), 'w').write(a[3])
     print(json.dumps({"result": {"ok": True}}))
+elif a[:2] == ['agent', 'wait']:
+    # simulate a TUI that swallowed Enter: wait times out until a nudge lands
+    if os.environ.get('HIRC_SHIM_STUCK') and not flag('nudged'):
+        print(json.dumps({"error": {"code": "timeout", "message": "timed out"}}))
+    else:
+        print(json.dumps({"result": {}}))
+elif a[:2] == ['agent', 'send-keys']:
+    touch('nudged')
+    print(json.dumps({"result": {"ok": True}}))
+elif a[:2] == ['agent', 'read']:
+    screen = os.environ.get('HIRC_SHIM_SCREEN')
+    if screen is None:
+        lp = open(os.path.join(home, 'lastprompt')).read() if flag('lastprompt') else ''
+        screen = "❭ " + lp          # the envelope still sits on the input line
+    sys.stdout.write(screen)
 elif a[:2] == ['agent', 'rename']:
     print(json.dumps({"result": {"name": a[3]}}))
 elif a[:2] == ['agent', 'get']:
@@ -133,6 +154,19 @@ class Hirc(unittest.TestCase):
         r = self.cli("nick", "dupe")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("taken", r.stderr)
+
+    def test_stuck_composer_gets_nudge(self):
+        env = {"HIRC_SHIM_STUCK": "1"}
+        r = self.cli("send", "alice", "hi", env_extra=env)
+        self.assertIn("delivered → alice", r.stdout)
+        self.assertIn("composer nudge", r.stdout)
+        self.assertTrue((Path(self.env["HOME"]) / "nudged").exists())
+
+    def test_no_draft_on_screen_reports_unverified(self):
+        env = {"HIRC_SHIM_STUCK": "1", "HIRC_SHIM_SCREEN": "just an idle prompt"}
+        r = self.cli("send", "alice", "hi", env_extra=env)
+        self.assertIn("unverified", r.stdout)
+        self.assertFalse((Path(self.env["HOME"]) / "nudged").exists())
 
     def test_reply_pins_to_pane_id(self):
         self.cli("send", "alice", "ping")
