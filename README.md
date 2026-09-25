@@ -98,6 +98,10 @@ herdr plugin action invoke web --plugin hirc        # open in browser
 herdr plugin action invoke web-stop --plugin hirc   # stop the daemon
 ```
 
+The daemon binds `127.0.0.1` only. The port is fixed at 9344 — override with
+`HIRC_PORT` (honored by `hirc-web`, `web-daemon.sh`, and `web-open.sh`). If the
+port is taken, the daemon fails to start rather than picking another one.
+
 ## Wire format
 
 Messages are injected into the recipient's input queue with a routing header:
