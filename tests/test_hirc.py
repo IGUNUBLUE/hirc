@@ -18,6 +18,9 @@ ROSTER = [
     {"name": "bob", "pane_id": "w1:p2", "agent": "codex", "agent_status": "working", "workspace_id": "wA", "cwd": "/a"},
     {"name": "carol", "pane_id": "w2:p1", "agent": "claude", "agent_status": "idle", "workspace_id": "wB", "cwd": "/b"},
     {"name": "selfy", "pane_id": "w1:p9", "agent": "devin", "agent_status": "working", "workspace_id": "wA", "cwd": "/a"},
+    # same name in two workspaces — addresses must not silently misroute
+    {"name": "dupe", "pane_id": "w9:p1", "agent": "devin", "agent_status": "idle", "workspace_id": "wC", "cwd": "/c"},
+    {"name": "dupe", "pane_id": "w9:p2", "agent": "codex", "agent_status": "idle", "workspace_id": "wC", "cwd": "/c"},
 ]
 WORKSPACES = [{"workspace_id": "wA", "label": "space-a"}, {"workspace_id": "wB", "label": "space-b"}]
 
@@ -84,7 +87,7 @@ class Hirc(unittest.TestCase):
         self.assertIn("queued → bob", r.stdout)
         r = self.cli("send", "bob", "two")
         self.assertIn("queued → bob", r.stdout)
-        pend = self.hirc_state / "pending" / "bob.jsonl"
+        pend = self.hirc_state / "pending" / "w1_p2.jsonl"   # keyed by pane id
         self.assertEqual(len(pend.read_text().splitlines()), 2)
         r = self.cli("flush", "bob")
         self.assertIn("delivered → bob (2 msg)", r.stdout)
@@ -115,6 +118,31 @@ class Hirc(unittest.TestCase):
         r = self.cli("reply", mid, "pong")
         self.assertIn("selfy", r.stdout)  # reply goes back to the sender
         self.assertEqual(self.mail()[-1].get("reply_to"), mid)
+
+    def test_ambiguous_name_refused(self):
+        r = self.cli("send", "dupe", "hi")
+        self.assertIn("failed:ambiguous", r.stdout)
+        self.assertIn("w9:p1", r.stdout)
+        self.assertIn("w9:p2", r.stdout)
+
+    def test_pane_id_routes_despite_dup_name(self):
+        r = self.cli("send", "w9:p2", "hi")
+        self.assertIn("delivered → w9:p2", r.stdout)
+
+    def test_nick_refuses_taken_name(self):
+        r = self.cli("nick", "dupe")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("taken", r.stderr)
+
+    def test_reply_pins_to_pane_id(self):
+        self.cli("send", "alice", "ping")
+        mid = self.mail()[-1]["id"]
+        r = self.cli("reply", mid, "pong")
+        self.assertIn("selfy", r.stdout)   # selfy is working → queued
+        m = self.mail()[-1]
+        self.assertEqual(m.get("to_pane"), "w1:p9")
+        pend = self.hirc_state / "pending" / "w1_p9.jsonl"
+        self.assertTrue(pend.exists())   # queued under the pane-id key
 
     def test_log_scoping(self):
         self.cli("send", "alice", "dm")

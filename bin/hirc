@@ -32,7 +32,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}$")
 STATE_DIR = os.path.expanduser("~/.local/state/herdr/plugins/hirc")
 LOG_FILE = os.path.join(STATE_DIR, "messages.jsonl")
@@ -158,6 +158,9 @@ def append_jsonl(path, obj, cap=512_000, keep=4000):
 def new_msg(to, body, channel=None, reply_to=None):
     m = {"id": secrets.token_hex(3), "ts": time.time(),
          "from": my_address(), "to": to, "body": body}
+    pane = os.environ.get("HERDR_PANE_ID")
+    if pane:
+        m["from_pane"] = pane
     if channel:
         m["channel"] = channel
     if reply_to:
@@ -228,8 +231,24 @@ def my_inbox_addr():
 # Messages to a busy peer accumulate in pending/<target>.jsonl and flush as ONE
 # merged turn when the peer goes idle (or on the next send/flush to it).
 
+def pend_key(m):
+    """Queue key: the resolved pane id when we have one — names are mutable
+    and non-unique across workspaces, pane ids are not."""
+    return m.get("to_pane") or addr_base(m["to"])
+
+
 def pend_append(m):
-    append_jsonl(os.path.join(PEND_DIR, _fname(m["to"]) + ".jsonl"), m)
+    append_jsonl(os.path.join(PEND_DIR, _fname(pend_key(m)) + ".jsonl"), m)
+
+
+def pend_drain_for(name, pane):
+    """Drain every queue that may hold this target's mail: the pane-id key
+    plus the bare-name key left by pre-pane-key versions."""
+    msgs = []
+    for k in dict.fromkeys([addr_base(name), pane]):
+        if k:
+            msgs += pend_drain(k)
+    return msgs
 
 
 def pend_drain(target):
@@ -287,6 +306,18 @@ def log_msg(direction, target, body, result, machine=None, channel=None,
         append_jsonl(LOG_FILE, entry)
     except OSError:
         pass
+
+
+def resolve_panes(addr, machine=None):
+    """All roster entries whose name or pane_id equals addr. Names are not
+    unique across workspaces — len>1 means the address is ambiguous."""
+    base = addr_base(addr)
+    return [a for a in roster(machine)
+            if base in (a.get("name"), a.get("pane_id"))]
+
+
+def _ambig_detail(matches):
+    return ", ".join(f"{a['pane_id']} (ws {a.get('workspace_id')})" for a in matches)
 
 
 def my_workspace(machine=None):
@@ -384,6 +415,12 @@ def cmd_nick(args):
     if name in HUMAN_ALIASES:
         die(f"'{name}' is reserved for the human mailbox — pick another")
     pane = os.environ.get("HERDR_PANE_ID") or die("not inside a Herdr pane; cannot self-register")
+    holder = [a for a in roster()
+              if a.get("name") == name and a.get("pane_id") != pane]
+    if holder:
+        a = holder[0]
+        die(f"'{name}' is taken by {a['pane_id']} (ws {a.get('workspace_id')}) "
+            "— names are global across workspaces; pick another")
     ok, _, err = herdr(["agent", "rename", pane, name])
     if not ok:
         die(f"rename failed: {err.get('code')} — {err.get('message')}")
@@ -399,25 +436,42 @@ def agent_status(addr, machine=None):
     return None
 
 
-def send_to(name, mach, body, channel=None, reply_to=None, defer=True):
-    """Append to durable mail, then deliver now or queue for coalesced flush."""
+def send_to(name, mach, body, channel=None, reply_to=None, defer=True, pane=None):
+    """Append to durable mail, then deliver now or queue for coalesced flush.
+
+    `pane` pins delivery to a pane id. A bare local name matching >1 roster
+    entry is refused — duplicate names across workspaces would misroute."""
     where = f"{name}@{mach}" if mach else name
+    to_pane, status = pane, None
+    if not mach:
+        matches = ([a for a in roster() if a.get("pane_id") == pane]
+                   if pane else resolve_panes(name))
+        if len(matches) > 1:
+            detail = f"matches {_ambig_detail(matches)} — resend to the pane id"
+            print(f"failed:ambiguous → {where}  ({detail})")
+            log_msg("out", where, body, "failed:ambiguous", channel=channel,
+                    reply_to=reply_to)
+            return
+        if matches:
+            to_pane = matches[0].get("pane_id")
+            status = matches[0].get("agent_status")
     m = new_msg(where, body, channel, reply_to)
+    if to_pane:
+        m["to_pane"] = to_pane
     mail_append(m)
     if name in HUMAN_ALIASES and not mach:
         log_msg("in", "human", body, "delivered", channel=channel,
                 msg_id=m["id"], reply_to=reply_to)
         print("delivered → human (web feed at http://127.0.0.1:9344)")
         return
-    status = agent_status(name) if not mach else None
     if defer and not mach and status in ("working", "blocked"):
         pend_append(m)
         print(f"queued → {where}  (busy — coalesces into one turn on idle; --now overrides)")
         log_msg("out", where, body, "queued", mach, channel=channel,
                 msg_id=m["id"], reply_to=reply_to)
         return
-    msgs = pend_drain(name) + [m]
-    receipt, detail = deliver(name, merged_envelope(msgs), mach)
+    msgs = (pend_drain_for(name, to_pane) if not mach else []) + [m]
+    receipt, detail = deliver(to_pane or name, merged_envelope(msgs), mach)
     print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))
     log_msg("out", where, body, receipt, mach, channel=channel,
             msg_id=m["id"], reply_to=reply_to)
@@ -428,7 +482,7 @@ def cmd_send(args):
     mine = os.environ.get("HERDR_PANE_ID")
     targets, channel = [], None
     if args.to == "all":
-        targets = [(agent_addr(a), args.machine)
+        targets = [(agent_addr(a), args.machine, a.get("pane_id"))
                    for a in roster(args.machine) if a.get("pane_id") != mine]
         if not targets:
             die("roster is empty — nobody to broadcast to")
@@ -441,15 +495,16 @@ def cmd_send(args):
         if my_ws is not None and my_ws != channel:
             die(f"not a member of #{ws.get('label') or channel} — "
                 "channels are scoped to their workspace")
-        targets = [(agent_addr(a), args.machine)
+        targets = [(agent_addr(a), args.machine, a.get("pane_id"))
                    for a in roster(args.machine)
                    if a.get("workspace_id") == channel and a.get("pane_id") != mine]
         if not targets:
             die(f"#{ws.get('label') or channel} has no agents to broadcast to")
     else:
-        targets = [split_target(args.to, args.machine)]
-    for name, mach in targets:
-        send_to(name, mach, body, channel, defer=not args.now)
+        name, mach = split_target(args.to, args.machine)
+        targets = [(name, mach, None)]
+    for name, mach, pane in targets:
+        send_to(name, mach, body, channel, defer=not args.now, pane=pane)
 
 
 def cmd_reply(args):
@@ -457,16 +512,29 @@ def cmd_reply(args):
     if not orig:
         die(f"message '{args.msg_id}' not in local mail — reply with: "
             "hirc send '<from-addr>' \"msg\" (address is in the [hirc ... from ...] header)")
-    target = orig["from"] if "@" in orig["from"] else orig["from"]
-    name, mach = split_target(target, None)
-    send_to(name, mach, " ".join(args.message), reply_to=orig["id"], defer=not args.now)
+    name, mach = split_target(orig["from"], None)
+    # pin the reply to the sender's recorded pane id — its name may have
+    # moved to a different pane since the message was sent
+    pane = orig.get("from_pane") if not mach else None
+    if pane and not any(a.get("pane_id") == pane for a in roster()):
+        pane = None
+    send_to(name, mach, " ".join(args.message), reply_to=orig["id"],
+            defer=not args.now, pane=pane)
+
+
+def _to_me(m, me):
+    """Addressed to me by current name, or pinned to my pane id — survives
+    renames in either direction."""
+    return (m.get("to_pane") is not None
+            and m["to_pane"] == os.environ.get("HERDR_PANE_ID")) \
+        or addr_base(m.get("to")) == me
 
 
 def cmd_inbox(args):
     me = my_inbox_addr()
     seen = 0 if args.all else seen_ts(me)
     msgs = [m for m in mail_scan()
-            if addr_base(m.get("to")) == me and m.get("ts", 0) > seen]
+            if _to_me(m, me) and m.get("ts", 0) > seen]
     if not msgs:
         print("(no new mail)" if not args.all else "(inbox empty)")
         return
@@ -501,7 +569,7 @@ def cmd_check(_args):
     else:
         seen = seen_ts(me)
         n = sum(1 for m in mail_scan()
-                if addr_base(m.get("to")) == me and m.get("ts", 0) > seen)
+                if _to_me(m, me) and m.get("ts", 0) > seen)
         try:
             os.makedirs(MAIL_DIR, exist_ok=True)
             with open(cache_file, "w") as f:
@@ -539,7 +607,19 @@ def cmd_flush(args):
         msgs = pend_drain(t)
         if not msgs:
             continue
-        addr = msgs[0].get("to", t)  # file stem is sanitized; msg.to is the real address
+        disp = msgs[0].get("to", t)  # file stem is sanitized; msg.to is the real address
+        addr = msgs[0].get("to_pane") or disp
+        if not msgs[0].get("to_pane"):
+            # pre-pane-key queue holds a bare name — re-resolve, never guess
+            matches = resolve_panes(addr)
+            if len(matches) == 1:
+                addr = matches[0]["pane_id"]
+            elif len(matches) > 1:
+                print(f"held → {disp} ({len(msgs)} msg)  "
+                      f"(ambiguous: {_ambig_detail(matches)} — flush by pane id)")
+                for m in msgs:
+                    pend_append(m)
+                continue
         if args.if_idle and agent_status(addr) in ("working", "blocked"):
             for m in msgs:
                 pend_append(m)
@@ -548,7 +628,7 @@ def cmd_flush(args):
         if not receipt.startswith("delivered"):   # keep pending durable on failure
             for m in msgs:
                 pend_append(m)
-        print(f"{receipt} → {addr} ({len(msgs)} msg)" + (f"  ({detail})" if detail else ""))
+        print(f"{receipt} → {disp} ({len(msgs)} msg)" + (f"  ({detail})" if detail else ""))
         log_msg("out", addr, f"[{len(msgs)} coalesced]", receipt)
 
 
@@ -557,20 +637,31 @@ def cmd_ask(args):
         die("ask targets one agent — use send for channels")
     name, mach = split_target(args.to, args.machine)
     where = f"{name}@{mach}" if mach else name
+    pane = None
+    if not mach:
+        matches = resolve_panes(name)
+        if len(matches) > 1:
+            die(f"'{name}' is ambiguous — matches {_ambig_detail(matches)}; "
+                "ask the pane id instead")
+        if matches:
+            pane = matches[0].get("pane_id")
     body = " ".join(args.message)
     m = new_msg(where, body)
+    if pane:
+        m["to_pane"] = pane
     mail_append(m)
-    msgs = (pend_drain(name) if not mach else []) + [m]
+    target = pane or name
+    msgs = (pend_drain_for(name, pane) if not mach else []) + [m]
     text = merged_envelope(msgs)
     ms = args.timeout or 120000
-    ok, _, err = herdr(["agent", "prompt", name, text, "--wait", "--timeout", str(ms)], machine=mach)
+    ok, _, err = herdr(["agent", "prompt", target, text, "--wait", "--timeout", str(ms)], machine=mach)
     if not ok:
         code = err.get("code", "error")
         print(f"{'blocked' if code == 'agent_blocked' else f'failed:{code}'} → {where}  ({err.get('message','')})")
         log_msg("out", where, body, code, mach)
         sys.exit(1)
     log_msg("out", where, body, "delivered+settled", mach)
-    ok, out, _ = herdr(["agent", "read", name, "--source", "recent-unwrapped", "--lines", str(args.lines)], machine=mach)
+    ok, out, _ = herdr(["agent", "read", target, "--source", "recent-unwrapped", "--lines", str(args.lines)], machine=mach)
     print(out if ok else f"hirc: prompt settled but read failed — try: hirc read {where}")
 
 

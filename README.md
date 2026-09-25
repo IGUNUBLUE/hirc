@@ -37,11 +37,19 @@ hirc machines · log · stats · skill · mcp
 ```
 
 **Delivery semantics.** Messages to a `working`/`blocked` peer don't interrupt:
-they queue in `pending/` and flush as a single coalesced turn when the peer
-goes idle (the web daemon watches `pane.agent_status_changed` on the Herdr
-socket, plus a periodic sweep for panes already idle). `--now` overrides.
+they queue in `pending/` (keyed by pane id) and flush as a single coalesced
+turn when the peer goes idle (the web daemon watches
+`pane.agent_status_changed` on the Herdr socket, plus a periodic sweep for
+panes already idle). `--now` overrides.
 Every message is appended to a per-sender append-only log (`mail/`) before
 delivery — that's the durable inbox `hirc inbox` reads.
+
+**Addressing.** Names are global and unique — `hirc nick` refuses a name
+another live pane already holds, even in a different workspace. Delivery
+pins each message to the resolved pane id (`to_pane`), so a later rename or
+duplicate registration can't redirect queued mail or replies. A bare name
+that still matches >1 pane (e.g. registered before this check existed)
+fails `failed:ambiguous` — resend to the pane id (`wG:pN`).
 
 **MCP.** `hirc mcp` serves the whole CLI as MCP tools over stdio —
 `{"command": "hirc", "args": ["mcp"]}` in any MCP-capable client.
