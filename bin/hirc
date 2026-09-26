@@ -14,7 +14,9 @@ Ops:
   hirc reply <id> <message...>    reply to a message by its id
   hirc inbox [--peek|--all]       read your durable mail; marks it seen
   hirc check                      exit 0 when new mail is waiting (cheap)
-  hirc flush [to]                 deliver queued coalesced messages now
+  hirc flush [to] [--onto addr]   deliver queued coalesced messages now;
+                                  --onto retargets a dead queue elsewhere
+  hirc pending                    list pending queues and target status
   hirc ask <to> <message...>      send, wait for the peer to settle, print its reply
   hirc read <to>                  tail a peer's output
   hirc wait <to>                  block until the peer settles
@@ -654,6 +656,7 @@ def send_to(name, mach, body, channel=None, reply_to=None, defer=True, pane=None
         if len(matches) > 1:
             detail = f"matches {_ambig_detail(matches)} — resend to the pane id"
             print(f"failed:ambiguous → {where}  ({detail})")
+            notify(f"hirc: ambiguous name '{name}'", detail, dedupe_key=name)
             log_msg("out", where, body, "failed:ambiguous", channel=channel,
                     reply_to=reply_to)
             return
@@ -678,6 +681,9 @@ def send_to(name, mach, body, channel=None, reply_to=None, defer=True, pane=None
     msgs = (pend_drain_for(name, to_pane) if not mach else []) + [m]
     receipt, detail = deliver(to_pane or name, merged_envelope(msgs), mach)
     print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))
+    if receipt.startswith("failed") or receipt == "blocked":
+        notify(f"hirc: {receipt} → {where}",
+               detail or body[:120], dedupe_key=where)
     log_msg("out", where, body, receipt, mach, channel=channel,
             msg_id=m["id"], reply_to=reply_to)
 
@@ -794,8 +800,69 @@ def flush_keys(target):
     return keys - {None}
 
 
+_NOTIFY_FILE = os.path.join(STATE_DIR, ".notify.json")
+
+
+def notify(title, body, dedupe_key=None):
+    """Operator toast via notification.show — failures the sender (often an
+    agent) can't see. Deduped per key+title so a sweep loop can't spam."""
+    try:
+        state = json.load(open(_NOTIFY_FILE))
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    key = f"{dedupe_key or ''}|{title}"
+    if time.time() - state.get(key, 0) < 1800:
+        return
+    state[key] = time.time()
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        json.dump(state, open(_NOTIFY_FILE, "w"))
+    except OSError:
+        pass
+    rpc("notification.show", {"title": title, "body": body}, timeout=5)
+
+
+def cmd_pending(_args):
+    """List pending coalesced queues: key, count, target, live status."""
+    rows = []
+    for stem in pend_all():
+        try:
+            msgs = [json.loads(l)
+                    for l in open(os.path.join(PEND_DIR, stem + ".jsonl"))]
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not msgs:
+            continue
+        addr = msgs[0].get("to_pane") or msgs[0].get("to") or stem
+        st = agent_status(addr) or "gone"
+        age = time.time() - msgs[0].get("ts", time.time())
+        rows.append((stem, len(msgs), addr, st, age))
+    if not rows:
+        print("(no pending queues)")
+        return
+    print(f"{'QUEUE':<14} {'MSGS':>4}  {'TARGET':<16} {'STATUS':<8} OLDEST")
+    for stem, n, addr, st, age in rows:
+        print(f"{stem:<14} {n:>4}  {addr:<16} {st:<8} {age / 60:.0f}m ago")
+    print("\nredirect a dead queue with: hirc flush <queue> --onto <name|pane>")
+
+
 def cmd_flush(args):
-    """Deliver queued (coalesced) messages for a target, or all targets."""
+    """Deliver queued (coalesced) messages for a target, or all targets.
+    --onto retargets a dead/stale queue to a live address — the queue is
+    re-keyed on failure so nothing returns to the dead pane's file."""
+    redir_addr = redir_pane = redir_mach = None
+    if args.onto:
+        if not args.to:
+            die("--onto needs a queue to drain: hirc flush <queue> --onto <target>")
+        name2, redir_mach = split_target(args.onto, None)
+        if redir_mach:
+            redir_addr = name2
+        else:
+            matches = resolve_panes(name2)
+            if len(matches) != 1:
+                die(f"'{args.onto}' matches {len(matches)} panes — use a pane id")
+            redir_pane = matches[0]["pane_id"]
+            redir_addr = redir_pane
     if args.to:
         keys = flush_keys(args.to)
         targets = sorted(k for k in keys if k in pend_all() or
@@ -813,30 +880,43 @@ def cmd_flush(args):
         if not msgs:
             continue
         disp = msgs[0].get("to", t)  # file stem is sanitized; msg.to is the real address
-        addr = msgs[0].get("to_pane") or disp
-        if not msgs[0].get("to_pane"):
-            # pre-pane-key queue holds a bare name — re-resolve, never guess
-            matches = resolve_panes(addr)
-            if len(matches) == 1:
-                addr = matches[0]["pane_id"]
-            elif len(matches) > 1:
-                print(f"held → {disp} ({len(msgs)} msg)  "
-                      f"(ambiguous: {_ambig_detail(matches)} — flush by pane id)")
-                for m in msgs:
-                    pend_append(m)
-                continue
+        if args.onto:
+            addr, mach = redir_addr, redir_mach
+            for m in msgs:                # re-key under the new target
+                m["to"], m["to_pane"] = args.onto, redir_pane
+            disp = f"{disp} → {args.onto}"
+        else:
+            mach = None
+            addr = msgs[0].get("to_pane") or disp
+            if not msgs[0].get("to_pane"):
+                # pre-pane-key queue holds a bare name — re-resolve, never guess
+                matches = resolve_panes(addr)
+                if len(matches) == 1:
+                    addr = matches[0]["pane_id"]
+                elif len(matches) > 1:
+                    print(f"held → {disp} ({len(msgs)} msg)  "
+                          f"(ambiguous: {_ambig_detail(matches)} — flush by pane id)")
+                    for m in msgs:
+                        pend_append(m)
+                    continue
         if args.if_idle:
             st = agent_status(addr)
-            if st in ("working", "blocked") or st is None:
-                if st is None:
+            if st in ("working", "blocked") or (st is None and not mach):
+                if st is None and not mach:
                     print(f"held → {disp} ({len(msgs)} msg)  (pane gone — retained)")
+                    notify("hirc: queue held — pane gone",
+                           f"{disp}: {len(msgs)} msg waiting; redirect with "
+                           f"hirc flush <queue> --onto <target>",
+                           dedupe_key=f"gone:{disp}")
                 for m in msgs:
                     pend_append(m)
                 continue
-        receipt, detail = deliver(addr, merged_envelope(msgs), None)
+        receipt, detail = deliver(addr, merged_envelope(msgs), mach)
         if not receipt.startswith("delivered"):   # keep pending durable on failure
             for m in msgs:
                 pend_append(m)
+            notify(f"hirc: {receipt}", f"{disp} — {len(msgs)} msg retained",
+                   dedupe_key=disp)
         print(f"{receipt} → {disp} ({len(msgs)} msg)" + (f"  ({detail})" if detail else ""))
         log_msg("out", addr, f"[{len(msgs)} coalesced]", receipt)
 
@@ -1100,9 +1180,11 @@ def main():
     p.add_argument("--peek", action="store_true", help="don't mark as read"); p.add_argument("--all", action="store_true", help="include already-read")
     p.set_defaults(fn=cmd_inbox)
     p = sub.add_parser("check", help="exit 0 if you have new mail (cheap)"); p.set_defaults(fn=cmd_check)
+    p = sub.add_parser("pending", help="list pending coalesced queues and their target status"); p.set_defaults(fn=cmd_pending)
     p = sub.add_parser("flush", help="deliver queued coalesced messages now")
     p.add_argument("to", nargs="?", help="target (default: all pending)")
     p.add_argument("--if-idle", action="store_true", help="skip targets that are still working/blocked")
+    p.add_argument("--onto", help="retarget the drained queue to a different name/pane id")
     p.set_defaults(fn=cmd_flush)
     p = sub.add_parser("ask", help="send and print the peer's reply"); common(p, target=True); p.add_argument("message", nargs="+"); p.add_argument("--timeout", type=int, help="ms to wait for the peer to settle (default 120000)"); p.add_argument("--lines", type=int, default=80); p.set_defaults(fn=cmd_ask)
     p = sub.add_parser("read", help="tail a peer's output"); common(p, target=True); p.add_argument("--lines", type=int, default=60); p.add_argument("--source", default="recent-unwrapped", choices=["visible", "recent", "recent-unwrapped", "detection"]); p.set_defaults(fn=cmd_read)

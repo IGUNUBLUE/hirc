@@ -188,6 +188,25 @@ class Hirc(unittest.TestCase):
         pend = self.hirc_state / "pending" / "w1_p9.jsonl"
         self.assertTrue(pend.exists())   # queued under the pane-id key
 
+    def test_pending_lists_queues(self):
+        self.cli("send", "bob", "hi")          # bob working → queued
+        r = self.cli("pending")
+        self.assertIn("w1_p2", r.stdout)
+        self.assertIn("working", r.stdout)
+
+    def test_flush_onto_redirects_dead_queue(self):
+        self.cli("send", "bob", "one")
+        self.cli("send", "bob", "two")
+        r = self.cli("flush", "w1_p2", "--onto", "carol")
+        self.assertIn("carol", r.stdout)
+        self.assertIn("delivered", r.stdout)
+        self.assertFalse((self.hirc_state / "pending" / "w1_p2.jsonl").exists())
+        # failure re-keys under the new target, not the dead one
+        self.cli("send", "bob", "three")
+        r = self.cli("flush", "w1_p2", "--onto", "w9:p1",
+                     env_extra={"HIRC_SHIM_STUCK": "1", "HIRC_SHIM_SCREEN": "x"})
+        self.assertIn("unverified", r.stdout)
+
     def test_log_scoping(self):
         self.cli("send", "alice", "dm")
         self.cli("send", "#space-a", "chan")
