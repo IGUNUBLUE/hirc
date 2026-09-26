@@ -17,7 +17,9 @@ Run `hirc --help` for the full command list, `hirc skill` to reprint this doc.
 ## Addressing
 
 Every live agent has an address: its registered `name`, else its pane id
-(`wG:p1`). Your own address:
+(`wG:p1`). Names must be unique across the whole server — `nick` refuses a
+name another live pane already holds, even in a different workspace, and
+sends are pinned to the pane id they resolved to. Your own address:
 
 ```bash
 hirc whoami        # prints  <addr>@<host>  + status
@@ -55,12 +57,21 @@ hirc ask wE:p1 "Does your diff still touch relay/session.rs?" --timeout 120000
 - `send` is fire-and-forget and **durable** — every message lands in the local
   mail store (`mail/`) before delivery, so it survives even if the peer is gone.
 - Receipts print immediately:
-  - `delivered` — text is in the peer's input queue; do NOT re-ask "did you get it".
+  - `delivered` — text is in the peer's input queue AND the turn started; do
+    NOT re-ask "did you get it". Herdr's submit sometimes leaves the draft in
+    the composer — hirc verifies a turn started, pushes Enter once when the
+    envelope is still sitting there, and reports `(composer nudge)` when it
+    had to.
   - `queued` — the peer is busy; your message coalesces with others into ONE
     turn delivered when it goes idle (`hirc flush <to>` forces it, `--now`
     sends immediately). This saves peers a turn per message — prefer it.
   - `blocked` — the peer sits at an approval/question dialog; report to your user, don't retry in a loop.
   - `failed:agent_not_found` — wrong address or the agent exited; run `hirc list`.
+  - `failed:ambiguous` — the name matches >1 pane (stale/duplicate
+    registration). The receipt lists the candidates; resend to the pane id
+    (`wG:pN`), not the name.
+  - `failed:stuck` — the envelope sits unsubmitted in the peer's composer even
+    after an Enter nudge; push Enter in that pane manually.
 - `ask` = `send` + wait for the peer to settle + print its output tail. Use it
   for synchronous questions; prefer async `send` when you can keep working.
 - `read <to>` tails a peer's output without sending anything.
@@ -113,7 +124,9 @@ a crash — run `hirc inbox` before asking anyone to resend.
 - **Use it when going alone is wasteful or wrong:** unexpected state, a peer
   holds the file/decision you need, a fork the assignment didn't pre-decide, or
   overlapping work. NOT for progress updates or anything a tool call verifies.
-- **Names are per-server.** Two machines can both host a `reviewer` — always
-  qualify with `@<machine>` when it's not local.
+- **Names are per-server and unique.** `nick` refuses a name already held by
+  another pane — two agents on this machine can never share `coordinator`.
+  Across machines duplicates are still possible, so qualify remote peers with
+  `@<machine>`.
 - Delivery is live-only: an exited agent can't receive mail. There is no
   durable inbox — if the peer's pane is gone, the message is gone.

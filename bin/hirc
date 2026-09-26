@@ -32,7 +32,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.2.0"
+VERSION = "0.2.2"
 NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}$")
 STATE_DIR = os.path.expanduser("~/.local/state/herdr/plugins/hirc")
 LOG_FILE = os.path.join(STATE_DIR, "messages.jsonl")
@@ -46,8 +46,145 @@ def die(msg, code=1):
     sys.exit(code)
 
 
+# --- transport ---------------------------------------------------------------
+# Preferred path is the Herdr socket API (NDJSON over the local unix socket —
+# the same documented surface the UI drives): no subprocess spawn, structured
+# error codes, and atomic prompt+wait. Falls back to the `herdr` CLI for remote
+# machines (the socket is per-server), verbs with no socket method, or when the
+# socket is unreachable. HIRC_NO_SOCK=1 forces the CLI path.
+
+def _sock_path():
+    p = os.environ.get("HERDR_SOCKET_PATH")
+    if p:
+        return p
+    sess = os.environ.get("HERDR_SESSION")
+    base = os.path.expanduser("~/.config/herdr")
+    return os.path.join(base, "sessions", sess, "herdr.sock") if sess \
+        else os.path.join(base, "herdr.sock")
+
+
+_TRANSPORT_ERRS = ("socket", "closed", "bad_json", "sock_timeout")
+_RPC_N = [0]
+
+
+def rpc(method, params=None, timeout=15.0):
+    """One request/response over the herdr socket → (result, None)|(None, err).
+    `result` is the socket response result dict, or plain text for reads."""
+    _RPC_N[0] += 1
+    rid = f"hirc-{os.getpid()}-{_RPC_N[0]}"
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(_sock_path())
+            s.sendall(json.dumps({"id": rid, "method": method,
+                                  "params": params or {}}).encode() + b"\n")
+            buf = b""
+            while True:
+                try:
+                    chunk = s.recv(1 << 20)
+                except socket.timeout:
+                    return None, {"code": "sock_timeout",
+                                  "message": f"socket call {method} timed out"}
+                if not chunk:
+                    return None, {"code": "closed", "message": "socket closed"}
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if msg.get("id") != rid:
+                        continue          # interleaved lines for other ids
+                    if "error" in msg:
+                        return None, msg["error"]
+                    return msg.get("result") or {}, None
+    except ValueError as e:
+        return None, {"code": "bad_json", "message": str(e)}
+    except OSError as e:
+        return None, {"code": "socket", "message": f"{e} ({_sock_path()})"}
+
+
+def _read_spec(args):
+    params, i = {"target": args[2], "source": "recent_unwrapped"}, 3
+    while i < len(args):
+        if args[i] == "--source" and i + 1 < len(args):
+            params["source"] = args[i + 1].replace("-", "_"); i += 2
+        elif args[i] == "--lines" and i + 1 < len(args):
+            params["lines"] = int(args[i + 1]); i += 2
+        else:
+            i += 1
+    return "agent.read", params, 15
+
+
+def _wait_spec(args):
+    params, i, ms = {"target": args[2]}, 3, None
+    until = []
+    while i < len(args):
+        if args[i] == "--until" and i + 1 < len(args):
+            until.append(args[i + 1]); i += 2
+        elif args[i] == "--timeout" and i + 1 < len(args):
+            ms = int(args[i + 1]); i += 2
+        else:
+            i += 1
+    if until:
+        params["until"] = until
+    params["timeout_ms"] = ms
+    return "agent.wait", params, (ms or 290000) / 1000 + 10
+
+
+def _prompt_spec(args):
+    params, i, ms = {"target": args[2], "text": args[3]}, 4, None
+    wait = False
+    while i < len(args):
+        if args[i] == "--wait":
+            wait = True; i += 1
+        elif args[i] == "--timeout" and i + 1 < len(args):
+            ms = int(args[i + 1]); i += 2
+        else:
+            i += 1
+    if wait or ms is not None:
+        params["wait"] = {"timeout_ms": ms}
+    return "agent.prompt", params, (ms or 290000) / 1000 + 10
+
+
+def _cli_spec(args):
+    """Argv → (method, params, sock_timeout_s) for socket-native verbs,
+    else None → keep the CLI subprocess."""
+    if args[:2] in (["agent", "list"], ["workspace", "list"]):
+        return f"{args[0]}.{args[1]}", {}, 15
+    if args[:2] == ["agent", "get"] and len(args) == 3:
+        return "agent.get", {"target": args[2]}, 15
+    if args[:2] == ["agent", "rename"] and len(args) == 4:
+        return "agent.rename", {"target": args[2], "name": args[3]}, 15
+    if args[:2] == ["agent", "send-keys"] and len(args) == 4:
+        return "agent.send_keys", {"target": args[2], "keys": [args[3]]}, 15
+    if args[:2] == ["agent", "read"] and len(args) >= 3:
+        return _read_spec(args)
+    if args[:2] == ["agent", "wait"] and len(args) >= 3:
+        return _wait_spec(args)
+    if args[:2] == ["agent", "prompt"] and len(args) >= 4:
+        return _prompt_spec(args)
+    return None
+
+
 def herdr(args, machine=None, capture_text=False):
-    """Run a herdr CLI command. Returns (ok, parsed_or_text, error_dict)."""
+    """herdr op — socket API first (local), CLI fallback for remote/unmappable.
+    Returns (ok, parsed_or_text, error_dict)."""
+    if not machine and not os.environ.get("HIRC_NO_SOCK"):
+        spec = _cli_spec(args)
+        if spec:
+            method, params, tmo = spec
+            res, err = rpc(method, params, timeout=tmo)
+            if err is None:
+                if method == "agent.read":
+                    text = (res.get("read") or {}).get("text",
+                            res.get("text", ""))
+                    return True, text, None
+                return True, res, None
+            if err.get("code") not in _TRANSPORT_ERRS:
+                return False, None, err          # real server-side answer
+            # transport failure → try the CLI below
     cmd = ["herdr"] + (["--machine", machine] if machine else []) + args
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -158,6 +295,9 @@ def append_jsonl(path, obj, cap=512_000, keep=4000):
 def new_msg(to, body, channel=None, reply_to=None):
     m = {"id": secrets.token_hex(3), "ts": time.time(),
          "from": my_address(), "to": to, "body": body}
+    pane = os.environ.get("HERDR_PANE_ID")
+    if pane:
+        m["from_pane"] = pane
     if channel:
         m["channel"] = channel
     if reply_to:
@@ -228,8 +368,24 @@ def my_inbox_addr():
 # Messages to a busy peer accumulate in pending/<target>.jsonl and flush as ONE
 # merged turn when the peer goes idle (or on the next send/flush to it).
 
+def pend_key(m):
+    """Queue key: the resolved pane id when we have one — names are mutable
+    and non-unique across workspaces, pane ids are not."""
+    return m.get("to_pane") or addr_base(m["to"])
+
+
 def pend_append(m):
-    append_jsonl(os.path.join(PEND_DIR, _fname(m["to"]) + ".jsonl"), m)
+    append_jsonl(os.path.join(PEND_DIR, _fname(pend_key(m)) + ".jsonl"), m)
+
+
+def pend_drain_for(name, pane):
+    """Drain every queue that may hold this target's mail: the pane-id key
+    plus the bare-name key left by pre-pane-key versions."""
+    msgs = []
+    for k in dict.fromkeys([addr_base(name), pane]):
+        if k:
+            msgs += pend_drain(k)
+    return msgs
 
 
 def pend_drain(target):
@@ -289,6 +445,18 @@ def log_msg(direction, target, body, result, machine=None, channel=None,
         pass
 
 
+def resolve_panes(addr, machine=None):
+    """All roster entries whose name or pane_id equals addr. Names are not
+    unique across workspaces — len>1 means the address is ambiguous."""
+    base = addr_base(addr)
+    return [a for a in roster(machine)
+            if base in (a.get("name"), a.get("pane_id"))]
+
+
+def _ambig_detail(matches):
+    return ", ".join(f"{a['pane_id']} (ws {a.get('workspace_id')})" for a in matches)
+
+
 def my_workspace(machine=None):
     """My pane's workspace_id, or None when not running inside a Herdr pane."""
     mine = os.environ.get("HERDR_PANE_ID")
@@ -334,13 +502,81 @@ def resolve_channel(name, machine=None):
         ", ".join(f"#{w.get('label') or w['workspace_id']}" for w in wss))
 
 
+ACTIVITY_WAIT_MS = 5000
+_ENVELOPE_MID = re.compile(r"\[hirc ([0-9a-f]{6})")
+
+
+def _turn_started(target, machine=None):
+    """Briefly wait for post-submit activity. `agent prompt` only proves bytes
+    were written — not that the TUI actually submitted them."""
+    return herdr(["agent", "wait", target, "--until", "working",
+                  "--until", "blocked", "--timeout", str(ACTIVITY_WAIT_MS)],
+                 machine=machine)
+
+
+def _nudge_if_stuck(target, text, machine=None):
+    """Some TUIs swallow the encoded Enter and leave the envelope as a draft.
+    When no turn started, the pane is at a plain prompt (idle/done — never a
+    dialog state) and our header is still on screen, push Enter once."""
+    mid = _ENVELOPE_MID.search(text)
+    if not mid or agent_status(target, machine) not in ("idle", "done"):
+        return False
+    ok, out, _ = herdr(["agent", "read", target, "--source", "visible",
+                        "--lines", "25"], machine=machine)
+    if not (ok and mid.group(1) in out):
+        return False
+    nok, _, _ = herdr(["agent", "send-keys", target, "enter"], machine=machine)
+    return bool(nok)
+
+
+_NO_ACTIVITY = {"agent_prompt_stalled", "timeout", "wait_timeout", "timed_out"}
+
+
+def _finish_stuck(target, text, machine):
+    """Submit accepted but no turn observed — when the envelope header still
+    sits in the composer of an idle/done pane, nudge Enter once; otherwise
+    report the verification gap honestly."""
+    if _nudge_if_stuck(target, text, machine):
+        started, _, _ = _turn_started(target, machine)
+        if started:
+            return "delivered", "composer nudge"
+        return "failed:stuck", "envelope sits in the composer — push Enter manually"
+    return "delivered", "unverified — no turn activity observed"
+
+
 def deliver(target, text, machine=None):
     """One fire-and-forget delivery. Returns (receipt, detail)."""
+    if not machine and not os.environ.get("HIRC_NO_SOCK"):
+        # atomic submit+wait: the server starts the wait inside the prompt
+        # request — a fast working→done turn can't slip between two calls,
+        # and a blocked pane refuses input before bytes hit the composer.
+        _, err = rpc("agent.prompt", {
+            "target": target, "text": text,
+            "wait": {"until": ["working", "blocked"],
+                     "timeout_ms": ACTIVITY_WAIT_MS}},
+            timeout=ACTIVITY_WAIT_MS / 1000 + 10)
+        if err is None:
+            return "delivered", ""
+        code = err.get("code", "")
+        if code in _TRANSPORT_ERRS:
+            pass                                     # → CLI path below
+        elif code in _NO_ACTIVITY:
+            return _finish_stuck(target, text, machine)
+        else:
+            return ("blocked" if code == "agent_blocked"
+                    else f"failed:{code}"), err.get("message", "")
     ok, _, err = herdr(["agent", "prompt", target, text], machine=machine)
-    if ok:
+    if not ok:
+        code = err.get("code", "error")
+        return ("blocked" if code == "agent_blocked" else f"failed:{code}"), err.get("message", "")
+    # prompt only proves bytes were written — some TUIs keep the draft in the
+    # composer and swallow the Enter. Confirm a turn started.
+    started, _, werr = _turn_started(target, machine)
+    if started:
         return "delivered", ""
-    code = err.get("code", "error")
-    return ("blocked" if code == "agent_blocked" else f"failed:{code}"), err.get("message", "")
+    if (werr or {}).get("code") == "agent_not_found":
+        return "failed:agent_not_found", (werr or {}).get("message", "")
+    return _finish_stuck(target, text, machine)
 
 
 def cmd_whoami(args):
@@ -384,6 +620,12 @@ def cmd_nick(args):
     if name in HUMAN_ALIASES:
         die(f"'{name}' is reserved for the human mailbox — pick another")
     pane = os.environ.get("HERDR_PANE_ID") or die("not inside a Herdr pane; cannot self-register")
+    holder = [a for a in roster()
+              if a.get("name") == name and a.get("pane_id") != pane]
+    if holder:
+        a = holder[0]
+        die(f"'{name}' is taken by {a['pane_id']} (ws {a.get('workspace_id')}) "
+            "— names are global across workspaces; pick another")
     ok, _, err = herdr(["agent", "rename", pane, name])
     if not ok:
         die(f"rename failed: {err.get('code')} — {err.get('message')}")
@@ -399,25 +641,42 @@ def agent_status(addr, machine=None):
     return None
 
 
-def send_to(name, mach, body, channel=None, reply_to=None, defer=True):
-    """Append to durable mail, then deliver now or queue for coalesced flush."""
+def send_to(name, mach, body, channel=None, reply_to=None, defer=True, pane=None):
+    """Append to durable mail, then deliver now or queue for coalesced flush.
+
+    `pane` pins delivery to a pane id. A bare local name matching >1 roster
+    entry is refused — duplicate names across workspaces would misroute."""
     where = f"{name}@{mach}" if mach else name
+    to_pane, status = pane, None
+    if not mach:
+        matches = ([a for a in roster() if a.get("pane_id") == pane]
+                   if pane else resolve_panes(name))
+        if len(matches) > 1:
+            detail = f"matches {_ambig_detail(matches)} — resend to the pane id"
+            print(f"failed:ambiguous → {where}  ({detail})")
+            log_msg("out", where, body, "failed:ambiguous", channel=channel,
+                    reply_to=reply_to)
+            return
+        if matches:
+            to_pane = matches[0].get("pane_id")
+            status = matches[0].get("agent_status")
     m = new_msg(where, body, channel, reply_to)
+    if to_pane:
+        m["to_pane"] = to_pane
     mail_append(m)
     if name in HUMAN_ALIASES and not mach:
         log_msg("in", "human", body, "delivered", channel=channel,
                 msg_id=m["id"], reply_to=reply_to)
         print("delivered → human (web feed at http://127.0.0.1:9344)")
         return
-    status = agent_status(name) if not mach else None
     if defer and not mach and status in ("working", "blocked"):
         pend_append(m)
         print(f"queued → {where}  (busy — coalesces into one turn on idle; --now overrides)")
         log_msg("out", where, body, "queued", mach, channel=channel,
                 msg_id=m["id"], reply_to=reply_to)
         return
-    msgs = pend_drain(name) + [m]
-    receipt, detail = deliver(name, merged_envelope(msgs), mach)
+    msgs = (pend_drain_for(name, to_pane) if not mach else []) + [m]
+    receipt, detail = deliver(to_pane or name, merged_envelope(msgs), mach)
     print(f"{receipt} → {where}" + (f"  ({detail})" if detail else ""))
     log_msg("out", where, body, receipt, mach, channel=channel,
             msg_id=m["id"], reply_to=reply_to)
@@ -428,7 +687,7 @@ def cmd_send(args):
     mine = os.environ.get("HERDR_PANE_ID")
     targets, channel = [], None
     if args.to == "all":
-        targets = [(agent_addr(a), args.machine)
+        targets = [(agent_addr(a), args.machine, a.get("pane_id"))
                    for a in roster(args.machine) if a.get("pane_id") != mine]
         if not targets:
             die("roster is empty — nobody to broadcast to")
@@ -441,15 +700,16 @@ def cmd_send(args):
         if my_ws is not None and my_ws != channel:
             die(f"not a member of #{ws.get('label') or channel} — "
                 "channels are scoped to their workspace")
-        targets = [(agent_addr(a), args.machine)
+        targets = [(agent_addr(a), args.machine, a.get("pane_id"))
                    for a in roster(args.machine)
                    if a.get("workspace_id") == channel and a.get("pane_id") != mine]
         if not targets:
             die(f"#{ws.get('label') or channel} has no agents to broadcast to")
     else:
-        targets = [split_target(args.to, args.machine)]
-    for name, mach in targets:
-        send_to(name, mach, body, channel, defer=not args.now)
+        name, mach = split_target(args.to, args.machine)
+        targets = [(name, mach, None)]
+    for name, mach, pane in targets:
+        send_to(name, mach, body, channel, defer=not args.now, pane=pane)
 
 
 def cmd_reply(args):
@@ -457,16 +717,29 @@ def cmd_reply(args):
     if not orig:
         die(f"message '{args.msg_id}' not in local mail — reply with: "
             "hirc send '<from-addr>' \"msg\" (address is in the [hirc ... from ...] header)")
-    target = orig["from"] if "@" in orig["from"] else orig["from"]
-    name, mach = split_target(target, None)
-    send_to(name, mach, " ".join(args.message), reply_to=orig["id"], defer=not args.now)
+    name, mach = split_target(orig["from"], None)
+    # pin the reply to the sender's recorded pane id — its name may have
+    # moved to a different pane since the message was sent
+    pane = orig.get("from_pane") if not mach else None
+    if pane and not any(a.get("pane_id") == pane for a in roster()):
+        pane = None
+    send_to(name, mach, " ".join(args.message), reply_to=orig["id"],
+            defer=not args.now, pane=pane)
+
+
+def _to_me(m, me):
+    """Addressed to me by current name, or pinned to my pane id — survives
+    renames in either direction."""
+    return (m.get("to_pane") is not None
+            and m["to_pane"] == os.environ.get("HERDR_PANE_ID")) \
+        or addr_base(m.get("to")) == me
 
 
 def cmd_inbox(args):
     me = my_inbox_addr()
     seen = 0 if args.all else seen_ts(me)
     msgs = [m for m in mail_scan()
-            if addr_base(m.get("to")) == me and m.get("ts", 0) > seen]
+            if _to_me(m, me) and m.get("ts", 0) > seen]
     if not msgs:
         print("(no new mail)" if not args.all else "(inbox empty)")
         return
@@ -501,7 +774,7 @@ def cmd_check(_args):
     else:
         seen = seen_ts(me)
         n = sum(1 for m in mail_scan()
-                if addr_base(m.get("to")) == me and m.get("ts", 0) > seen)
+                if _to_me(m, me) and m.get("ts", 0) > seen)
         try:
             os.makedirs(MAIL_DIR, exist_ok=True)
             with open(cache_file, "w") as f:
@@ -539,16 +812,32 @@ def cmd_flush(args):
         msgs = pend_drain(t)
         if not msgs:
             continue
-        addr = msgs[0].get("to", t)  # file stem is sanitized; msg.to is the real address
-        if args.if_idle and agent_status(addr) in ("working", "blocked"):
-            for m in msgs:
-                pend_append(m)
-            continue
+        disp = msgs[0].get("to", t)  # file stem is sanitized; msg.to is the real address
+        addr = msgs[0].get("to_pane") or disp
+        if not msgs[0].get("to_pane"):
+            # pre-pane-key queue holds a bare name — re-resolve, never guess
+            matches = resolve_panes(addr)
+            if len(matches) == 1:
+                addr = matches[0]["pane_id"]
+            elif len(matches) > 1:
+                print(f"held → {disp} ({len(msgs)} msg)  "
+                      f"(ambiguous: {_ambig_detail(matches)} — flush by pane id)")
+                for m in msgs:
+                    pend_append(m)
+                continue
+        if args.if_idle:
+            st = agent_status(addr)
+            if st in ("working", "blocked") or st is None:
+                if st is None:
+                    print(f"held → {disp} ({len(msgs)} msg)  (pane gone — retained)")
+                for m in msgs:
+                    pend_append(m)
+                continue
         receipt, detail = deliver(addr, merged_envelope(msgs), None)
         if not receipt.startswith("delivered"):   # keep pending durable on failure
             for m in msgs:
                 pend_append(m)
-        print(f"{receipt} → {addr} ({len(msgs)} msg)" + (f"  ({detail})" if detail else ""))
+        print(f"{receipt} → {disp} ({len(msgs)} msg)" + (f"  ({detail})" if detail else ""))
         log_msg("out", addr, f"[{len(msgs)} coalesced]", receipt)
 
 
@@ -557,20 +846,34 @@ def cmd_ask(args):
         die("ask targets one agent — use send for channels")
     name, mach = split_target(args.to, args.machine)
     where = f"{name}@{mach}" if mach else name
+    pane = None
+    if not mach:
+        matches = resolve_panes(name)
+        if len(matches) > 1:
+            die(f"'{name}' is ambiguous — matches {_ambig_detail(matches)}; "
+                "ask the pane id instead")
+        if matches:
+            pane = matches[0].get("pane_id")
     body = " ".join(args.message)
     m = new_msg(where, body)
+    if pane:
+        m["to_pane"] = pane
     mail_append(m)
-    msgs = (pend_drain(name) if not mach else []) + [m]
+    target = pane or name
+    msgs = (pend_drain_for(name, pane) if not mach else []) + [m]
     text = merged_envelope(msgs)
     ms = args.timeout or 120000
-    ok, _, err = herdr(["agent", "prompt", name, text, "--wait", "--timeout", str(ms)], machine=mach)
+    ok, _, err = herdr(["agent", "prompt", target, text, "--wait", "--timeout", str(ms)], machine=mach)
+    if not ok and err.get("code") == "agent_prompt_stalled" \
+            and _nudge_if_stuck(target, text, mach):
+        ok, _, err = herdr(["agent", "wait", target, "--timeout", str(ms)], machine=mach)
     if not ok:
         code = err.get("code", "error")
         print(f"{'blocked' if code == 'agent_blocked' else f'failed:{code}'} → {where}  ({err.get('message','')})")
         log_msg("out", where, body, code, mach)
         sys.exit(1)
     log_msg("out", where, body, "delivered+settled", mach)
-    ok, out, _ = herdr(["agent", "read", name, "--source", "recent-unwrapped", "--lines", str(args.lines)], machine=mach)
+    ok, out, _ = herdr(["agent", "read", target, "--source", "recent-unwrapped", "--lines", str(args.lines)], machine=mach)
     print(out if ok else f"hirc: prompt settled but read failed — try: hirc read {where}")
 
 

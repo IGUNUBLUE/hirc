@@ -37,11 +37,37 @@ hirc machines · log · stats · skill · mcp
 ```
 
 **Delivery semantics.** Messages to a `working`/`blocked` peer don't interrupt:
-they queue in `pending/` and flush as a single coalesced turn when the peer
-goes idle (the web daemon watches `pane.agent_status_changed` on the Herdr
-socket, plus a periodic sweep for panes already idle). `--now` overrides.
+they queue in `pending/` (keyed by pane id) and flush as a single coalesced
+turn when the peer goes idle (the web daemon watches
+`pane.agent_status_changed` on the Herdr socket, plus a periodic sweep for
+panes already idle). `--now` overrides.
 Every message is appended to a per-sender append-only log (`mail/`) before
 delivery — that's the durable inbox `hirc inbox` reads.
+
+`agent prompt` only proves bytes were written — some TUIs swallow the encoded
+Enter and leave the envelope as a draft in the composer. After each submit
+hirc waits ≤5s for turn activity; if the pane stays idle/done and the envelope
+header is still on screen, it sends one `send-keys enter` nudge
+(receipt `delivered (composer nudge)`), else it reports `failed:stuck` /
+`delivered (unverified)` instead of silently claiming success.
+
+**Transport.** Local ops go over the Herdr socket API (NDJSON on the unix
+socket — the documented surface the UI itself drives): no subprocess spawn,
+structured error codes, and `agent.prompt` carries its `wait` in the same
+request so turn verification is atomic (a fast working→done turn can't slip
+between two calls). The `herdr` CLI remains the fallback for remote
+`@machine` targets and verbs without a socket method; `HIRC_NO_SOCK=1` forces
+it everywhere. `hirc-web` uses the same socket for `session.snapshot` and its
+event subscription (with a ping keepalive instead of resubscribing on quiet
+periods). `--if-idle` flushes retain queues whose pane is gone instead of
+burning a delivery attempt per sweep.
+
+**Addressing.** Names are global and unique — `hirc nick` refuses a name
+another live pane already holds, even in a different workspace. Delivery
+pins each message to the resolved pane id (`to_pane`), so a later rename or
+duplicate registration can't redirect queued mail or replies. A bare name
+that still matches >1 pane (e.g. registered before this check existed)
+fails `failed:ambiguous` — resend to the pane id (`wG:pN`).
 
 **MCP.** `hirc mcp` serves the whole CLI as MCP tools over stdio —
 `{"command": "hirc", "args": ["mcp"]}` in any MCP-capable client.
@@ -97,6 +123,10 @@ The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
 herdr plugin action invoke web --plugin hirc        # open in browser
 herdr plugin action invoke web-stop --plugin hirc   # stop the daemon
 ```
+
+The daemon binds `127.0.0.1` only. The port is fixed at 9344 — override with
+`HIRC_PORT` (honored by `hirc-web`, `web-daemon.sh`, and `web-open.sh`). If the
+port is taken, the daemon fails to start rather than picking another one.
 
 ## Wire format
 
