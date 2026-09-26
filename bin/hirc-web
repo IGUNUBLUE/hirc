@@ -100,12 +100,45 @@ def _walk(obj):
 _state_cache = {"ts": 0.0, "data": None}
 
 
+def rpc(method, params=None, timeout=10.0):
+    """One NDJSON request over the herdr socket → (result, None)|(None, err).
+    Same transport the UI uses — no subprocess spawn per call."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(SOCK)
+            rid = f"hirc-web-rpc-{time.time_ns()}"
+            s.sendall(json.dumps({"id": rid, "method": method,
+                                  "params": params or {}}).encode() + b"\n")
+            buf = b""
+            while True:
+                chunk = s.recv(1 << 20)
+                if not chunk:
+                    return None, {"code": "closed", "message": "socket closed"}
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    try:
+                        msg = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if msg.get("id") != rid:
+                        continue
+                    if "error" in msg:
+                        return None, msg["error"]
+                    return msg.get("result") or {}, None
+    except (OSError, ValueError) as e:
+        return None, {"code": "socket", "message": str(e)}
+
+
 def snapshot_state():
-    """Whole roster+workspaces via ONE `herdr api snapshot` socket call,
-    TTL-cached ~1.5s so SSE-triggered poll bursts collapse into one fetch."""
+    """Whole roster+workspaces via ONE session.snapshot socket call (CLI
+    fallback when the socket is gone), TTL-cached ~1.5s."""
     if _state_cache["data"] and time.time() - _state_cache["ts"] < 1.5:
         return _state_cache["data"]
-    d, err = run_herdr(["api", "snapshot"])
+    d, err = rpc("session.snapshot")
+    if err:
+        d, err = run_herdr(["api", "snapshot"])
     if err or not isinstance(d, dict):
         _STATS["api_errors"] += 1
         dlog("api_error", op="snapshot", err=err)
@@ -154,8 +187,23 @@ def _flush_idle(pane):
     dlog("flush", pane=pane, rc=rc, out=(out or err).strip()[:200])
 
 
+def _next_line(s, buf):
+    """One NDJSON line from the socket. recv-timeout raises socket.timeout
+    WITHOUT corrupting state (unlike makefile iteration)."""
+    while b"\n" not in buf:
+        chunk = s.recv(65536)
+        if not chunk:
+            raise OSError("subscription closed")
+        buf += chunk
+    line, buf = buf.split(b"\n", 1)
+    return line, buf
+
+
 def herdr_events():
-    """Persistent NDJSON subscription to the herdr socket; reconnects forever."""
+    """Persistent NDJSON subscription to the herdr socket; reconnects on real
+    loss. A quiet socket read times out every 120s — answer with a ping
+    keepalive instead of a needless resubscribe; a second unanswered timeout
+    means a half-dead conn → reconnect."""
     backoff = 0.5
     panes = set()
     while True:
@@ -171,22 +219,33 @@ def herdr_events():
                 "id": "hirc-web", "method": "events.subscribe",
                 "params": {"subscriptions": subs},
             }).encode() + b"\n")
-            f = s.makefile("r")
-            ack = f.readline()
-            if '"error"' in ack:
+            buf = b""
+            ack, buf = _next_line(s, buf)
+            if '"error"' in ack.decode(errors="replace"):
                 raise OSError(ack.strip())
             panes = fresh
             backoff = 0.5
+            pinged = False
             _STATS["reconnects"] += 1
             dlog("subscribed", panes=len(fresh))
             sse_push("roster", {"event": "connected"})
-            for line in f:
+            resub = False
+            while not resub:
+                try:
+                    line, buf = _next_line(s, buf)
+                except socket.timeout:
+                    if pinged:                      # no answer → dead conn
+                        raise OSError("keepalive unanswered")
+                    pinged = True
+                    s.sendall(b'{"id":"hirc-web-ping","method":"ping","params":{}}\n')
+                    continue
+                pinged = False
                 try:
                     if handle_event(json.loads(line)) == "resub":
                         time.sleep(0.4)          # coalesce layout churn
                         if live_panes() != panes:
-                            break                # reconnect with new pane set
-                except (json.JSONDecodeError, socket.timeout):
+                            resub = True            # reconnect with new pane set
+                except json.JSONDecodeError:
                     pass
         except OSError as e:
             dlog("sub_lost", err=str(e)[:200])

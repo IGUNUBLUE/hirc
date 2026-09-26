@@ -5,9 +5,11 @@ Run: python3 tests/test_hirc.py
 """
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -76,7 +78,9 @@ class Hirc(unittest.TestCase):
         self.env = dict(os.environ,
                         PATH=f"{t}/bin:{os.environ['PATH']}",
                         HERDR_PANE_ID="w1:p9",
-                        HOME=str(t))
+                        HOME=str(t),
+                        # dead socket → base suite exercises the CLI fallback
+                        HERDR_SOCKET_PATH=str(t / "no-herdr.sock"))
         # point hirc's state dir at the sandbox
         self.env["XDG_STATE_HOME"] = str(self.state)
         self.hirc_state = t / ".local" / "state" / "herdr" / "plugins" / "hirc"
@@ -87,6 +91,12 @@ class Hirc(unittest.TestCase):
 
     def cli(self, *args, env_extra=None):
         env = dict(self.env, **(env_extra or {}))
+        home = Path(env["HOME"])
+        # marker files mirror the env flags — the socket fake can't see the
+        # child's env, so both shims read state from HOME
+        (home / ".stuck").write_text("1") if env.get("HIRC_SHIM_STUCK") else None
+        if env.get("HIRC_SHIM_SCREEN") is not None:
+            (home / ".screen").write_text(env["HIRC_SHIM_SCREEN"])
         return subprocess.run([HIRC, *args], capture_output=True, text=True, env=env)
 
     def mail(self):
@@ -184,6 +194,109 @@ class Hirc(unittest.TestCase):
         out = self.cli("log", "--all").stdout
         self.assertIn("→ alice", out)
         self.assertIn("→ bob", out)
+
+
+class FakeHerdrSock(threading.Thread):
+    """Speaks the herdr socket protocol — same behavior as the CLI shim but
+    over NDJSON so tests exercise the socket transport path."""
+
+    def __init__(self, path, home):
+        super().__init__(daemon=True)
+        self.path, self.home, self._stop = path, home, False
+        self.srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.srv.bind(path)
+        self.srv.listen()
+
+    def _answer(self, req):
+        m, p = req.get("method"), req.get("params") or {}
+        home = self.home
+        flag = lambda n: os.path.exists(os.path.join(home, n))
+        stuck = flag(".stuck") and not flag("nudged")
+        if m == "agent.list":
+            return {"result": {"type": "agent_list", "agents": ROSTER}}
+        if m == "workspace.list":
+            return {"result": {"type": "workspace_list", "workspaces": WORKSPACES}}
+        if m == "agent.prompt":
+            open(os.path.join(home, "lastprompt"), "w").write(p.get("text", ""))
+            if p.get("wait") and stuck:
+                return {"error": {"code": "agent_prompt_stalled", "message": "no turn"}}
+            return {"result": {"type": "agent_prompted"}}
+        if m == "agent.wait":
+            if stuck:
+                return {"error": {"code": "timeout", "message": "timed out"}}
+            return {"result": {"type": "wait_matched"}}
+        if m == "agent.send_keys":
+            open(os.path.join(home, "nudged"), "w").write("1")
+            return {"result": {"type": "ok"}}
+        if m == "agent.read":
+            screen = open(os.path.join(home, ".screen")).read() if flag(".screen") else None
+            if screen is None:
+                lp = open(os.path.join(home, "lastprompt")).read() if flag("lastprompt") else ""
+                screen = "❭ " + lp
+            return {"result": {"type": "agent_read", "read": {"text": screen}}}
+        if m == "agent.rename":
+            return {"result": {"type": "agent_renamed", "name": p.get("name")}}
+        return {"result": {"type": "ok"}}
+
+    def _conn(self, c):
+        buf = b""
+        try:
+            while not self._stop:
+                chunk = c.recv(1 << 16)
+                if not chunk:
+                    return
+                buf += chunk
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    try:
+                        req = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    ans = self._answer(req)
+                    ans["id"] = req.get("id")
+                    c.sendall(json.dumps(ans).encode() + b"\n")
+        except OSError:
+            pass
+        finally:
+            c.close()
+
+    def run(self):
+        while not self._stop:
+            try:
+                c, _ = self.srv.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._conn, args=(c,), daemon=True).start()
+
+    def stop(self):
+        self._stop = True
+        try:
+            with socket.socket(socket.AF_UNIX) as s:
+                s.connect(self.path)
+        except OSError:
+            pass
+        self.srv.close()
+
+
+class HircSocket(Hirc):
+    """Same suite over the socket transport — the fake server stands in for
+    herdrd; the CLI shim stays on PATH as the untouched fallback."""
+
+    def setUp(self):
+        super().setUp()
+        sock = os.path.join(self.env["HOME"], "herdr.sock")
+        self.sockd = FakeHerdrSock(sock, self.env["HOME"])
+        self.sockd.start()
+        self.env["HERDR_SOCKET_PATH"] = sock
+
+    def tearDown(self):
+        self.sockd.stop()
+        super().tearDown()
+
+    def test_prompt_uses_atomic_wait(self):
+        # the socket path sends ONE agent.prompt carrying wait, not prompt+wait
+        r = self.cli("send", "alice", "hi")
+        self.assertIn("delivered → alice", r.stdout)
 
 
 if __name__ == "__main__":

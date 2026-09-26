@@ -51,6 +51,17 @@ header is still on screen, it sends one `send-keys enter` nudge
 (receipt `delivered (composer nudge)`), else it reports `failed:stuck` /
 `delivered (unverified)` instead of silently claiming success.
 
+**Transport.** Local ops go over the Herdr socket API (NDJSON on the unix
+socket — the documented surface the UI itself drives): no subprocess spawn,
+structured error codes, and `agent.prompt` carries its `wait` in the same
+request so turn verification is atomic (a fast working→done turn can't slip
+between two calls). The `herdr` CLI remains the fallback for remote
+`@machine` targets and verbs without a socket method; `HIRC_NO_SOCK=1` forces
+it everywhere. `hirc-web` uses the same socket for `session.snapshot` and its
+event subscription (with a ping keepalive instead of resubscribing on quiet
+periods). `--if-idle` flushes retain queues whose pane is gone instead of
+burning a delivery attempt per sweep.
+
 **Addressing.** Names are global and unique — `hirc nick` refuses a name
 another live pane already holds, even in a different workspace. Delivery
 pins each message to the resolved pane id (`to_pane`), so a later rename or
