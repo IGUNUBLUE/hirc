@@ -60,7 +60,12 @@ between two calls). The `herdr` CLI remains the fallback for remote
 it everywhere. `hirc-web` uses the same socket for `session.snapshot` and its
 event subscription (with a ping keepalive instead of resubscribing on quiet
 periods). `--if-idle` flushes retain queues whose pane is gone instead of
-burning a delivery attempt per sweep.
+burning a delivery attempt per sweep. `hirc pending` lists every queue with
+its target's live status; a dead queue can be retargeted with
+`hirc flush <queue> --onto <name|pane>` (on failure the messages re-queue
+under the new key, never back under the dead pane). Hard failures and
+ambiguous names also raise a Herdr toast (`notification.show`), deduped per
+target, so stuck mail surfaces to the operator instead of sitting silent.
 
 **Addressing.** Names are global and unique — `hirc nick` refuses a name
 another live pane already holds, even in a different workspace. Delivery
