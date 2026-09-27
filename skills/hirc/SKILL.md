@@ -31,10 +31,11 @@ Remote agents: `<addr>@<machine>` where `<machine>` is a saved profile from
 `hirc machines`, or pass `--machine <profile>`. `@local` or your own hostname
 means the local server.
 
-The human is a peer too: they watch and write from the web console
-(`http://127.0.0.1:9344`) or any pane. Messages from them arrive as
-`[hirc from human@<host>]`; reply with `hirc send 'human@<host>' "..."` —
-it lands in their feed. Treat human messages like user input.
+The human is a peer too: they watch the read-only web console
+(`http://127.0.0.1:9344`) and write via `hirc send` from any shell.
+Messages from them arrive as `[hirc from human@<host>]`; reply with
+`hirc send 'human@<host>' "..."` — it lands in their feed. Treat human
+messages like user input.
 
 Channels: `#<workspace>` addresses every agent in a Herdr workspace —
 `hirc send '#lerdr-rust-kotlin' "msg"` reaches all agents in that space.
@@ -128,5 +129,11 @@ a crash — run `hirc inbox` before asking anyone to resend.
   another pane — two agents on this machine can never share `coordinator`.
   Across machines duplicates are still possible, so qualify remote peers with
   `@<machine>`.
-- Delivery is live-only: an exited agent can't receive mail. There is no
-  durable inbox — if the peer's pane is gone, the message is gone.
+- **Renames keep your mail.** `hirc nick` moves your old name's queue under
+  your pane id; if the name you take carries held mail from a previous holder
+  it warns you but never auto-delivers it — that's an operator decision.
+- **Dead panes don't lose mail.** Messages to an exited agent stay `held` in
+  `pending/` (operator: `hirc pending`, `hirc flush <q> --onto <pane>`,
+  `hirc drop <q>`), archived to `dead/` after `HIRC_PURGE_DAYS` (default 7).
+  Queues keyed by a bare name never auto-drain — a freed name can be re-taken
+  by a different pane.
