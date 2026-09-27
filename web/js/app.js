@@ -116,10 +116,10 @@ PetiteVue.createApp({
   get agentStats() {
     const ids = this.idsFor(this.sel);
     const t = this.threadMsgs;
-    const inMsgs = t.filter(m => ids.has(m.from));          // authored by the agent
-    const outMsgs = t.filter(m => !ids.has(m.from));        // addressed to the agent
-    const ok = outMsgs.filter(m => /delivered/.test(m.result || '')).length;
-    const fails = outMsgs.filter(m => /failed|stuck|not_found/.test(m.result || '')).length;
+    const inMsgs = t.filter(m => ids.has(m.to) || ids.has(m.to_pane));   // received by the agent
+    const outMsgs = t.filter(m => ids.has(m.from));                      // sent by the agent
+    const ok = inMsgs.filter(m => /delivered/.test(m.result || '')).length;
+    const fails = inMsgs.filter(m => /failed|stuck|not_found/.test(m.result || '')).length;
     const peers = {};
     for (const m of t) {
       const peer = ids.has(m.from) ? m.to : m.from;
@@ -127,9 +127,10 @@ PetiteVue.createApp({
     }
     return {
       msgs: t.length, in: inMsgs.length, out: outMsgs.length,
-      ok, fails, rate: outMsgs.length ? Math.round(ok / outMsgs.length * 100) : null,
+      ok, fails, rate: inMsgs.length ? Math.round(ok / inMsgs.length * 100) : null,
       last: t.length ? t[t.length - 1].ts : null,
-      peers: Object.entries(peers).sort((a, b) => b[1] - a[1]).slice(0, 5),
+      peers: Object.entries(peers).sort((a, b) => b[1] - a[1])
+                   .slice(0, 5).map(([p, n]) => ({ p, n })),
     };
   },
   get selQueues() {
