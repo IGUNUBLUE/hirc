@@ -219,6 +219,37 @@ class Hirc(unittest.TestCase):
         q = json.loads((pend / "w1_p9.jsonl").read_text().strip())
         self.assertEqual(q["to_pane"], "w1:p9")
 
+    def _namekey_queue(self, name="alice"):
+        pend = self.hirc_state / "pending"
+        pend.mkdir(parents=True, exist_ok=True)
+        (pend / f"{name}.jsonl").write_text(
+            json.dumps({"id": "leg1", "to": name, "from": "x",
+                        "ts": 1, "body": "old msg"}) + "\n")
+
+    def test_namekeyed_queue_never_auto_drains(self):
+        # a bare-name queue must not land on whoever holds the name now —
+        # the name may have been re-taken by a different session
+        self._namekey_queue()
+        r = self.cli("flush")                       # bulk flush: held
+        self.assertIn("held → alice", r.stdout)
+        self.assertIn("name-keyed", r.stdout)
+        r = self.cli("flush", "--if-idle")          # daemon sweep: held too
+        self.assertIn("held → alice", r.stdout)
+        f = self.hirc_state / "pending" / "alice.jsonl"
+        self.assertTrue(f.exists())
+
+    def test_namekeyed_queue_explicit_flush(self):
+        self._namekey_queue()
+        r = self.cli("flush", "alice")              # operator intent: delivers
+        self.assertIn("delivered → alice (w1:p1)", r.stdout)
+
+    def test_nick_warns_on_inherited_queue(self):
+        self._namekey_queue("newname")
+        r = self.cli("nick", "newname")
+        self.assertIn("previous holder", r.stdout)
+        f = self.hirc_state / "pending" / "newname.jsonl"
+        self.assertTrue(f.exists())                 # held, not claimed
+
     def test_log_scoping(self):
         self.cli("send", "alice", "dm")
         self.cli("send", "#space-a", "chan")
