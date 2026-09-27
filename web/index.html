@@ -95,7 +95,7 @@
       <p class="empty" v-if="!feed.length">no messages yet</p>
     </div>
 
-    <div id="feed" class="feed" v-if="view==='agent'">
+    <div class="agentview" v-if="view==='agent'">
       <div class="acard" v-if="sel">
         <span class="badge big" :style="{background: kindColor(kindFor(sel))}">
           <img v-if="hasIcon(kindFor(sel))" :src="'/icons/' + kindFor(sel) + '.svg'" :alt="kindFor(sel)">
@@ -127,6 +127,7 @@
           </div>
         </div>
       </div>
+      <div id="feed" class="feed">
       <div v-for="(it, i) in threadItems" :key="i">
         <div class="day" v-if="it.type === 'day'"><span>{{ it.label }}</span></div>
         <div class="msg" v-else :class="it.m.dir">
@@ -148,6 +149,7 @@
         </div>
       </div>
       <p class="empty" v-if="sel && !threadMsgs.length">no messages involving {{ sel }} yet</p>
+      </div>
     </div>
   </section>
 </main>
