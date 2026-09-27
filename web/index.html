@@ -118,7 +118,7 @@
           </div>
           <div class="acard-stats" v-if="agentStats.peers.length || selQueues.length">
             <span class="dim" v-if="agentStats.peers.length">peers:</span>
-            <span class="peer-chip" v-for="[p, n] in agentStats.peers" :key="p">{{ p }} ×{{ n }}</span>
+            <span class="peer-chip" v-for="peer in agentStats.peers" :key="peer.p">{{ peer.p }} ×{{ peer.n }}</span>
             <span class="qchip" v-for="qu in selQueues" :key="qu.queue"
                   :class="{gone: qu.gone || qu.archived}"
                   :title="qu.queue + (qu.gone ? ' — target pane gone' : '')">
@@ -127,7 +127,7 @@
           </div>
         </div>
       </div>
-      <template v-for="(it, i) in threadItems" :key="i">
+      <div v-for="(it, i) in threadItems" :key="i">
         <div class="day" v-if="it.type === 'day'"><span>{{ it.label }}</span></div>
         <div class="msg" v-else :class="it.m.dir">
           <div class="meta">
@@ -146,7 +146,7 @@
           </div>
           <div class="body">{{ it.m.body }}</div>
         </div>
-      </template>
+      </div>
       <p class="empty" v-if="sel && !threadMsgs.length">no messages involving {{ sel }} yet</p>
     </div>
   </section>
