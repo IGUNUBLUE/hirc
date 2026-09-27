@@ -201,9 +201,9 @@ def _next_line(s, buf):
 
 def herdr_events():
     """Persistent NDJSON subscription to the herdr socket; reconnects on real
-    loss. A quiet socket read times out every 120s — answer with a ping
-    keepalive instead of a needless resubscribe; a second unanswered timeout
-    means a half-dead conn → reconnect."""
+    loss only. Subscribed connections are read-only streams — writing a ping
+    gets the conn reset. A quiet period raises our client-side timeout: keep
+    reading, the conn is fine. EOF/reset = genuine loss → resubscribe."""
     backoff = 0.5
     panes = set()
     while True:
@@ -225,7 +225,6 @@ def herdr_events():
                 raise OSError(ack.strip())
             panes = fresh
             backoff = 0.5
-            pinged = False
             _STATS["reconnects"] += 1
             dlog("subscribed", panes=len(fresh))
             sse_push("roster", {"event": "connected"})
@@ -234,12 +233,13 @@ def herdr_events():
                 try:
                     line, buf = _next_line(s, buf)
                 except socket.timeout:
-                    if pinged:                      # no answer → dead conn
-                        raise OSError("keepalive unanswered")
-                    pinged = True
-                    s.sendall(b'{"id":"hirc-web-ping","method":"ping","params":{}}\n')
+                    # quiet period — the conn is likely fine (subscribed conns
+                    # are read-only; a ping here would get it reset). Probe on
+                    # a SEPARATE conn to detect a dead server.
+                    _, perr = rpc("ping", timeout=5)
+                    if perr:
+                        raise OSError(f"server unreachable: {perr.get('code')}")
                     continue
-                pinged = False
                 try:
                     if handle_event(json.loads(line)) == "resub":
                         time.sleep(0.4)          # coalesce layout churn
@@ -468,6 +468,13 @@ if __name__ == "__main__":
     if os.path.exists(SOCK):
         threading.Thread(target=herdr_events, daemon=True).start()
     threading.Thread(target=mail_watch, daemon=True).start()
-    srv = ThreadingHTTPServer((HOST, PORT), Api)
+    try:
+        srv = ThreadingHTTPServer((HOST, PORT), Api)
+    except OSError as e:
+        # watchdog can spawn a second copy while one already holds the port —
+        # exit quietly, the pidfile guard owns the live one
+        print(f"hirc-web: cannot bind {HOST}:{PORT} ({e}) — already running?",
+              file=sys.stderr)
+        sys.exit(0)
     print(f"hirc-web on http://{HOST}:{PORT}", file=sys.stderr)
     srv.serve_forever()
