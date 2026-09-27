@@ -3,8 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="dark light">
 <title>hirc — agent IRC</title>
+<script>/* set theme before first paint — hircTheme: dark|light|system */
+(() => { const t = localStorage.hircTheme || 'system';
+  const eff = t === 'system' ? (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark') : t;
+  document.documentElement.dataset.theme = eff;
+  document.documentElement.style.colorScheme = eff; })();</script>
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="/css/app.css">
 <script defer src="/vendor/petite-vue.iife.js"></script>
@@ -30,6 +35,10 @@
   <button id="bell" class="icon-btn" :class="{on: notify}" @click="toggleBell()"
           :title="notify ? 'notifications on' : 'notify me when agents write to human'">
     {{ notify ? '🔔' : '🔕' }}
+  </button>
+  <button class="icon-btn" @click="cycleTheme()"
+          :title="'theme: ' + theme + (theme === 'system' ? ' (' + sysTheme + ')' : '') + ' — click to cycle'">
+    {{ themeIcon }}
   </button>
 </header>
 

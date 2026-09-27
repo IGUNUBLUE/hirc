@@ -29,6 +29,7 @@ PetiteVue.createApp({
   view: 'feed', feedSeen: now(), drawer: false,
   filter: localStorage.hircFilter || 'all',
   notify: localStorage.hircNotify === '1',
+  theme: localStorage.hircTheme || 'system',
   lastSeen: JSON.parse(localStorage.hircSeen || '{}'),
   seenCount: +(localStorage.hircCount || 0),
 
@@ -50,6 +51,8 @@ PetiteVue.createApp({
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') this.setView('feed');
     });
+    matchMedia('(prefers-color-scheme: light)')
+      .addEventListener('change', () => this.applyTheme());
     this._feed = document.getElementById('feed');
   },
 
@@ -203,6 +206,23 @@ PetiteVue.createApp({
     this.setFilter(this.filter === 'chan:' + g.id ? 'all' : 'chan:' + g.id);
     this.drawer = false;
     this.setView('feed');
+  },
+  get sysTheme() {
+    return matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  },
+  get themeIcon() {
+    return { light: '☀', dark: '☾', system: '◐' }[this.theme] || '◐';
+  },
+  applyTheme() {
+    const eff = this.theme === 'system' ? this.sysTheme : this.theme;
+    document.documentElement.dataset.theme = eff;
+    document.documentElement.style.colorScheme = eff;
+  },
+  cycleTheme() {
+    const order = ['dark', 'light', 'system'];
+    this.theme = order[(order.indexOf(this.theme) + 1) % order.length];
+    localStorage.hircTheme = this.theme;
+    this.applyTheme();
   },
   async toggleBell() {
     this.notify = !this.notify;
