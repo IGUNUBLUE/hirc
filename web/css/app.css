@@ -18,11 +18,20 @@
     --accent: #7aa2f7;
     --st-working: #d97757; --st-idle: #4c9a5a; --st-done: #6b9bd2;
     --st-blocked: #c04a4a; --st-unknown: #907aa9;
+    --amber-fg: #c9a13b; --amber-bd: #8a6d1f;
     --font-sans: 'Inter var', system-ui, -apple-system, 'Segoe UI', sans-serif;
     --font-mono: 'JetBrains Mono var', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
     --fs: 13px; --fs-sm: 11px; --fs-xs: 10px;
     --sp-1: 4px; --sp-2: 8px; --sp-3: 10px; --sp-4: 14px;
     --r-sm: 4px; --r-md: 5px; --r-pill: 10px;
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f3f6; --bg-2: #ffffff; --bg-3: #e7e7ee;
+    --fg: #2b2b34; --dim: #62626f; --border: #d9d9e2;
+    --accent: #3f5fb8;
+    --st-working: #bf4a26; --st-idle: #2e7d45; --st-done: #3a6ea5;
+    --st-blocked: #b03232; --st-unknown: #7a6494;
+    --amber-fg: #8a6d1f; --amber-bd: #c9a13b;
   }
 }
 
@@ -162,7 +171,7 @@
   .acard-sub { color: var(--dim); font-size: var(--fs-sm); font-family: var(--font-mono); margin-top: 1px }
   .acard-stats { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
                  color: var(--dim); font-size: var(--fs-sm); margin-top: 4px }
-  .qchip { border: 1px solid #8a6d1f; color: #c9a13b; border-radius: 9px;
+  .qchip { border: 1px solid var(--amber-bd); color: var(--amber-fg); border-radius: 9px;
            padding: 0 8px; font-size: var(--fs-xs) }
   .qchip.gone { border-color: var(--st-blocked); color: var(--st-blocked) }
 
@@ -172,7 +181,7 @@
   .day::before, .day::after { content: ''; flex: 1; border-top: 1px solid var(--border) }
 
   /* queued badge on roster rows */
-  .queued { color: #c9a13b; border: 1px solid #8a6d1f; border-radius: 9px;
+  .queued { color: var(--amber-fg); border: 1px solid var(--amber-bd); border-radius: 9px;
             font-size: var(--fs-xs); padding: 0 6px; font-weight: bold }
 
   .bad { color: var(--st-blocked) }
