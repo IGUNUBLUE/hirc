@@ -53,6 +53,7 @@
           <span class="addr">{{ a.address }}</span>
           <span class="sub"><span class="st" :class="a.status"></span>{{ a.status }}</span>
         </span>
+        <span class="queued" v-if="queuedCount(a)" :title="queuedCount(a) + ' msg queued — delivers when idle'">⧗{{ queuedCount(a) }}</span>
         <span class="unread" v-if="unreadFor(a.address)">{{ unreadFor(a.address) }}</span>
       </div>
     </div>
@@ -64,8 +65,8 @@
       <button class="tab" :class="{on: view==='feed'}" @click="setView('feed')">
         Feed<span class="tab-badge" v-if="view!=='feed' && freshFeed">{{ freshFeed }}</span>
       </button>
-      <button class="tab" :class="{on: view==='output'}" @click="setView('output')" :disabled="!sel">
-        {{ sel ? sel + ' — live' : 'output' }}
+      <button class="tab" :class="{on: view==='agent'}" @click="setView('agent')" :disabled="!sel">
+        {{ sel ? sel : 'agent' }}
       </button>
       <nav class="chips" aria-label="conversations" v-if="view==='feed'">
         <span class="chip" :class="{on: filter==='all'}" @click="setFilter('all')">all</span>
@@ -96,10 +97,53 @@
       <p class="empty" v-if="!feed.length">no messages yet</p>
     </div>
 
-    <div id="out" class="out" v-if="view==='output'">
-      <div class="hdr" v-if="sel">{{ sel }} — live output (3s)</div>
-      <div class="hdr" v-else>select an agent to tail its live output</div>
-      <pre class="tail" v-if="out">{{ out }}</pre>
+    <div id="feed" class="feed" v-if="view==='agent'">
+      <div class="acard" v-if="sel">
+        <span class="badge big" :style="{background: kindColor(kindFor(sel))}">
+          <img v-if="hasIcon(kindFor(sel))" :src="'/icons/' + kindFor(sel) + '.svg'" :alt="kindFor(sel)">
+          <template v-else>{{ kindLetters(kindFor(sel)) }}</template>
+        </span>
+        <div class="acard-main">
+          <div class="acard-name">{{ sel }}
+            <span class="st-pill" :class="selAgent ? selAgent.status : 'gone'">{{ selAgent ? selAgent.status : 'gone' }}</span>
+          </div>
+          <div class="acard-sub" v-if="selAgent">
+            {{ selAgent.pane }} · {{ selAgent.kind }} · #{{ chanLabel(selAgent.workspace) }}
+          </div>
+          <div class="acard-sub" v-else>not in roster — renamed or exited</div>
+          <div class="acard-stats">
+            <span>{{ agentStats.msgs }} msgs</span>
+            <span v-if="agentStats.last">· last {{ time(agentStats.last) }} ({{ dateStr(agentStats.last) }})</span>
+            <span class="qchip" v-for="qu in selQueues" :key="qu.queue"
+                  :class="{gone: qu.gone || qu.archived}"
+                  :title="qu.queue + (qu.gone ? ' — target pane gone' : '')">
+              ⧗ {{ qu.msgs }} {{ qu.archived ? 'archived' : (qu.gone ? 'held — pane gone' : 'queued') }}
+            </span>
+          </div>
+        </div>
+      </div>
+      <template v-for="(it, i) in threadItems" :key="i">
+        <div class="day" v-if="it.type === 'day'"><span>{{ it.label }}</span></div>
+        <div class="msg" v-else :class="it.m.dir" @click="replyTo(it.m)"
+             :title="'reply to ' + it.m.from" role="button">
+          <div class="meta">
+            <span class="time">{{ time(it.m.ts) }}</span>
+            <span class="who">
+              <span class="mini-badge" :style="{background: kindColor(kindFor(it.m.from))}">{{ kindLetters(kindFor(it.m.from)) }}</span>
+              <span class="from">{{ it.m.from || '?' }}</span>
+              <span class="arrow">→</span>
+              <span class="mini-badge" :style="{background: kindColor(kindFor(it.m.to))}">{{ kindLetters(kindFor(it.m.to)) }}</span>
+              <span class="to" :class="{human: it.m.to==='human'}">{{ it.m.to }}</span>
+            </span>
+            <span class="receipt" :class="{bad: !isOk(it.m.result)}">[{{ it.m.result }}]</span>
+            <span class="mid" v-if="it.m.id">{{ it.m.id }}</span>
+            <span class="chan-tag" v-if="it.m.channel">#{{ chanLabel(it.m.channel) }}</span>
+            <span class="re-tag" v-if="it.m.re">↩ {{ it.m.re }}</span>
+          </div>
+          <div class="body">{{ it.m.body }}</div>
+        </div>
+      </template>
+      <p class="empty" v-if="sel && !threadMsgs.length">no messages with {{ sel }} yet — write below</p>
     </div>
 
     <div class="receipt-line">{{ receipt }}</div>

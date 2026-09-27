@@ -7,9 +7,8 @@ Human sends appear to agents as `from human@<host>`; agents can reply with
 mailbox in hirc's log.
 
 Endpoints:
-  GET  /api/state                    → {me, agents, workspaces, messages}
+  GET  /api/state                    → {me, agents, workspaces, messages, pending}
   GET  /api/events                   → SSE stream (roster/feed change pushes)
-  GET  /api/agent/<addr>/output      → {output}  (pane tail)
   GET  /api/machines                 → saved SSH profiles
   POST /api/send  {to, body}         → {receipts}
 
@@ -37,6 +36,7 @@ LOG_FILE = os.path.join(STATE_DIR, "messages.jsonl")
 DLOG_FILE = os.path.join(STATE_DIR, "daemon.jsonl")   # internal health log
 MAIL_DIR = os.path.join(STATE_DIR, "mail")
 PEND_DIR = os.path.join(STATE_DIR, "pending")
+DEAD_DIR = os.path.join(STATE_DIR, "dead")
 WEB_ROOT = os.path.join(os.path.dirname(os.path.realpath(__file__)), os.pardir, "web")
 HIRC = shutil.which("hirc") or os.path.expanduser("~/.local/bin/hirc") \
     or os.path.join(os.path.dirname(os.path.realpath(__file__)), "hirc")
@@ -317,6 +317,33 @@ def run_herdr(args):
     return None, {"code": "cli_error", "message": (p.stderr or p.stdout).strip()}
 
 
+def pending_queues():
+    """Pending + archived queues for the UI — what the messaging surface
+    actually cares about (who owes mail to whom), not terminal output."""
+    live = {a.get("pane") for a in snapshot_state()[0]} | \
+           {a.get("address") for a in snapshot_state()[0]}
+    out = []
+    for d, archived in ((PEND_DIR, False), (DEAD_DIR, True)):
+        try:
+            files = os.listdir(d)
+        except OSError:
+            continue
+        for f in files:
+            if not f.endswith(".jsonl"):
+                continue
+            try:
+                msgs = [json.loads(l) for l in open(os.path.join(d, f))]
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not msgs:
+                continue
+            addr = msgs[0].get("to_pane") or msgs[0].get("to") or f[:-6]
+            out.append({"queue": f[:-6], "addr": addr, "msgs": len(msgs),
+                        "oldest": msgs[0].get("ts"), "archived": archived,
+                        "gone": addr not in live})
+    return out
+
+
 def read_log(limit=300):
     out = []
     try:
@@ -413,12 +440,9 @@ class Api(BaseHTTPRequestHandler):
                 agents, workspaces = snapshot_state()
             return self._json({
                 "agents": agents, "workspaces": workspaces, "machine": machine or "local",
-                "messages": read_log(), "me": None, "ts": int(time.time()),
+                "messages": read_log(), "pending": pending_queues(),
+                "me": None, "ts": int(time.time()),
             })
-        if m := re.fullmatch(r"/api/agent/([^/]+)/output", u.path):
-            lines = q.get("lines", ["120"])[0]
-            rc, out, err = run(["read", m.group(1), "--lines", lines])
-            return self._json({"output": out, "ok": rc == 0, "error": err.strip()})
         if u.path == "/api/machines":
             rc, out, _ = run(["machines", "--json"])
             try:

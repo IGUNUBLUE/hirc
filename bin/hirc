@@ -456,7 +456,7 @@ def merged_envelope(msgs):
 
 
 def log_msg(direction, target, body, result, machine=None, channel=None,
-            msg_id=None, reply_to=None):
+            msg_id=None, reply_to=None, to_pane=None):
     try:
         os.makedirs(STATE_DIR, exist_ok=True)
         entry = {
@@ -464,6 +464,8 @@ def log_msg(direction, target, body, result, machine=None, channel=None,
             "to": target, "machine": machine or "local",
             "result": result, "body": body,
         }
+        if to_pane:
+            entry["to_pane"] = to_pane
         if channel:
             entry["channel"] = channel
         if msg_id:
@@ -723,7 +725,7 @@ def send_to(name, mach, body, channel=None, reply_to=None, defer=True, pane=None
         pend_append(m)
         print(f"queued → {where}  (busy — coalesces into one turn on idle; --now overrides)")
         log_msg("out", where, body, "queued", mach, channel=channel,
-                msg_id=m["id"], reply_to=reply_to)
+                msg_id=m["id"], reply_to=reply_to, to_pane=to_pane)
         return
     msgs = (pend_drain_for(name, to_pane) if not mach else []) + [m]
     receipt, detail = deliver(to_pane or name, merged_envelope(msgs), mach)
@@ -732,7 +734,7 @@ def send_to(name, mach, body, channel=None, reply_to=None, defer=True, pane=None
         notify(f"hirc: {receipt} → {where}",
                detail or body[:120], dedupe_key=where)
     log_msg("out", where, body, receipt, mach, channel=channel,
-            msg_id=m["id"], reply_to=reply_to)
+            msg_id=m["id"], reply_to=reply_to, to_pane=to_pane)
 
 
 def cmd_send(args):
@@ -999,7 +1001,8 @@ def cmd_flush(args):
             notify(f"hirc: {receipt}", f"{disp} — {len(msgs)} msg retained",
                    dedupe_key=disp)
         print(f"{receipt} → {disp} ({len(msgs)} msg)" + (f"  ({detail})" if detail else ""))
-        log_msg("out", addr, f"[{len(msgs)} coalesced]", receipt)
+        log_msg("out", addr, f"[{len(msgs)} coalesced]", receipt,
+                to_pane=addr if ":" in str(addr) else None)
 
 
 def cmd_drop(args):
