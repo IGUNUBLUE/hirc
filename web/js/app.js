@@ -28,7 +28,6 @@ PetiteVue.createApp({
   sel: localStorage.hircSel || null,
   view: 'feed', feedSeen: now(), drawer: false,
   filter: localStorage.hircFilter || 'all',
-  to: '', body: '', receipt: '',
   notify: localStorage.hircNotify === '1',
   lastSeen: JSON.parse(localStorage.hircSeen || '{}'),
   seenCount: +(localStorage.hircCount || 0),
@@ -49,9 +48,6 @@ PetiteVue.createApp({
     this._timers = [setInterval(() => this.poll(), 30000)];
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.poll(); });
     document.addEventListener('keydown', e => {
-      if (e.key === '/' && !/INPUT|TEXTAREA/.test(e.target.tagName)) {
-        e.preventDefault(); document.querySelector('.composer input[aria-label="message"]')?.focus();
-      }
       if (e.key === 'Escape') this.setView('feed');
     });
   },
@@ -90,7 +86,7 @@ PetiteVue.createApp({
   chanLabel(id) {
     return this.workspaces.find(w => w.workspace_id === id)?.label || id;
   },
-  get addrBook() { return ['all', 'human', ...this.agents.map(a => a.address)]; },
+
   get freshFeed() {
     return this.view === 'feed' ? 0
       : this.messages.filter(m => m.ts > this.feedSeen).length;
@@ -124,9 +120,21 @@ PetiteVue.createApp({
   get agentStats() {
     const ids = this.idsFor(this.sel);
     const t = this.threadMsgs;
-    const toMe = t.filter(m => ids.has(m.from)).length;
-    const last = t.length ? t[t.length - 1].ts : null;
-    return { msgs: t.length, from: toMe, to: t.length - toMe, last };
+    const inMsgs = t.filter(m => ids.has(m.from));          // authored by the agent
+    const outMsgs = t.filter(m => !ids.has(m.from));        // addressed to the agent
+    const ok = outMsgs.filter(m => /delivered/.test(m.result || '')).length;
+    const fails = outMsgs.filter(m => /failed|stuck|not_found/.test(m.result || '')).length;
+    const peers = {};
+    for (const m of t) {
+      const peer = ids.has(m.from) ? m.to : m.from;
+      if (peer) peers[peer] = (peers[peer] || 0) + 1;
+    }
+    return {
+      msgs: t.length, in: inMsgs.length, out: outMsgs.length,
+      ok, fails, rate: outMsgs.length ? Math.round(ok / outMsgs.length * 100) : null,
+      last: t.length ? t[t.length - 1].ts : null,
+      peers: Object.entries(peers).sort((a, b) => b[1] - a[1]).slice(0, 5),
+    };
   },
   get selQueues() {
     if (!this.sel) return [];
@@ -183,7 +191,6 @@ PetiteVue.createApp({
   },
   select(a) {
     this.sel = a.address; localStorage.hircSel = a.address;
-    this.to = a.address;
     this.lastSeen[a.address] = now();
     localStorage.hircSeen = JSON.stringify(this.lastSeen);
     this.drawer = false;
@@ -196,30 +203,13 @@ PetiteVue.createApp({
   },
   openChannel(g) {
     this.setFilter('chan:' + g.id);
-    this.to = '#' + g.label;
     this.drawer = false;
     this.setView('feed');
-  },
-  replyTo(m) {
-    this.to = m.from === 'human' ? 'human' : m.from;
-    document.querySelector('.composer input[aria-label="message"]')?.focus();
   },
   async toggleBell() {
     this.notify = !this.notify;
     if (this.notify && Notification.permission !== 'granted')
       this.notify = (await Notification.requestPermission()) === 'granted';
     localStorage.hircNotify = this.notify ? '1' : '0';
-  },
-  async send() {
-    const to = this.to.trim(), body = this.body.trim();
-    if (!to || !body) return;
-    this.body = '';
-    const r = await fetch('/api/send', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, body, machine: this.machine }),
-    });
-    const d = await r.json();
-    this.receipt = (d.receipts || [d.error]).join('  ');
-    setTimeout(() => this.poll(), 400);
   },
 }).mount();

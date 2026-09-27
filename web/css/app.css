@@ -175,17 +175,7 @@
   .queued { color: #c9a13b; border: 1px solid #8a6d1f; border-radius: 9px;
             font-size: var(--fs-xs); padding: 0 6px; font-weight: bold }
 
-  /* composer */
-  .receipt-line { font-size: var(--fs-sm); padding: 0 var(--sp-4) 8px; color: var(--dim); background: var(--bg-2) }
-  .composer { display: flex; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4);
-              border-top: 1px solid var(--border); background: var(--bg-2) }
-  .composer input { background: var(--bg-3); border: 1px solid var(--border); color: var(--fg);
-                    padding: 7px 10px; border-radius: var(--r-sm) }
-  .composer input:focus { border-color: var(--accent); outline: none }
-  .composer input[list] { width: 190px }
-  .composer input { font-family: var(--font-mono); font-size: 12px }
-  .composer input[aria-label="message"] { flex: 1 }
-  .composer button { background: var(--bg-3); border: 1px solid var(--border); color: var(--accent);
-                     padding: 7px 14px; border-radius: var(--r-sm); transition: border-color .15s }
-  .composer button:hover { border-color: var(--accent) }
+  .bad { color: var(--st-blocked) }
+  .peer-chip { color: var(--fg); border: 1px solid var(--border); border-radius: 9px;
+               padding: 0 8px; font-size: var(--fs-xs) }
 }

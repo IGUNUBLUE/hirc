@@ -26,7 +26,7 @@
   </select>
   <span class="blocked-chip" v-if="nBlocked">{{ nBlocked }} blocked</span>
   <span class="spacer"></span>
-  <span class="dim hint">agents reply to you with: hirc send human "…"</span>
+  <span class="dim hint">read-only monitor — agents write to the human mailbox with: hirc send human "…"</span>
   <button id="bell" class="icon-btn" :class="{on: notify}" @click="toggleBell()"
           :title="notify ? 'notifications on' : 'notify me when agents write to human'">
     {{ notify ? '🔔' : '🔕' }}
@@ -112,8 +112,15 @@
           </div>
           <div class="acard-sub" v-else>not in roster — renamed or exited</div>
           <div class="acard-stats">
-            <span>{{ agentStats.msgs }} msgs</span>
+            <span>↧ {{ agentStats.in }} in</span>
+            <span>↥ {{ agentStats.out }} out</span>
+            <span v-if="agentStats.rate !== null" :class="{bad: agentStats.fails}">{{ agentStats.rate }}% delivered</span>
+            <span v-if="agentStats.fails" class="bad">{{ agentStats.fails }} failed</span>
             <span v-if="agentStats.last">· last {{ time(agentStats.last) }} ({{ dateStr(agentStats.last) }})</span>
+          </div>
+          <div class="acard-stats" v-if="agentStats.peers.length || selQueues.length">
+            <span class="dim" v-if="agentStats.peers.length">peers:</span>
+            <span class="peer-chip" v-for="[p, n] in agentStats.peers" :key="p">{{ p }} ×{{ n }}</span>
             <span class="qchip" v-for="qu in selQueues" :key="qu.queue"
                   :class="{gone: qu.gone || qu.archived}"
                   :title="qu.queue + (qu.gone ? ' — target pane gone' : '')">
@@ -124,8 +131,7 @@
       </div>
       <template v-for="(it, i) in threadItems" :key="i">
         <div class="day" v-if="it.type === 'day'"><span>{{ it.label }}</span></div>
-        <div class="msg" v-else :class="it.m.dir" @click="replyTo(it.m)"
-             :title="'reply to ' + it.m.from" role="button">
+        <div class="msg" v-else :class="it.m.dir">
           <div class="meta">
             <span class="time">{{ time(it.m.ts) }}</span>
             <span class="who">
@@ -143,18 +149,8 @@
           <div class="body">{{ it.m.body }}</div>
         </div>
       </template>
-      <p class="empty" v-if="sel && !threadMsgs.length">no messages with {{ sel }} yet — write below</p>
+      <p class="empty" v-if="sel && !threadMsgs.length">no messages involving {{ sel }} yet</p>
     </div>
-
-    <div class="receipt-line">{{ receipt }}</div>
-    <form class="composer" @submit.prevent="send()">
-      <input v-model="to" list="addrs" placeholder="to (addr)" aria-label="recipient">
-      <datalist id="addrs">
-        <option v-for="a in addrBook" :value="a"></option>
-      </datalist>
-      <input v-model="body" placeholder="message — you sign as human@host" aria-label="message" ref="msg">
-      <button type="submit">send</button>
-    </form>
   </section>
 </main>
 

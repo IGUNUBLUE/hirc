@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""hirc-web — read/write web console for hirc on http://127.0.0.1:9344.
+"""hirc-web — read-only observability console for hirc on http://127.0.0.1:9344.
 
-Serves the SPA and a small JSON API that wraps the `hirc`/`herdr` CLIs.
-Human sends appear to agents as `from human@<host>`; agents can reply with
-`hirc send 'human@<host>' "..."` — those land in the feed via the `human`
-mailbox in hirc's log.
+This is a monitoring surface for agent-to-agent coordination, not an
+intervention panel: the human acts inside panes via the CLI; the web shows
+the feed, roster, per-agent messaging detail, and queue health. Agents can
+still reach the human mailbox with `hirc send 'human@<host>' "..."` — those
+land in the feed via hirc's log.
 
-Endpoints:
-  GET  /api/state                    → {me, agents, workspaces, messages, pending}
-  GET  /api/events                   → SSE stream (roster/feed change pushes)
-  GET  /api/machines                 → saved SSH profiles
-  POST /api/send  {to, body}         → {receipts}
+Endpoints (all GET):
+  /api/state                    → {me, agents, workspaces, messages, pending}
+  /api/events                   → SSE stream (roster/feed change pushes)
+  /api/machines                 → saved SSH profiles
 
 The daemon is also the event engine: it subscribes to Herdr socket events and
 flushes coalesced pending mail when an agent goes idle.
@@ -452,39 +452,11 @@ class Api(BaseHTTPRequestHandler):
             return self._json({"machines": machines})
         return self._json({"error": "not found"}, 404)
 
-    def _origin_ok(self):
-        """Localhost-only CSRF guard: browsers send Origin on cross-site POSTs;
-        CLI clients (curl) send none. Reject non-local origins so a random web
-        page can't inject 'human' messages into agents."""
-        o = self.headers.get("Origin") or self.headers.get("Referer")
-        if not o:
-            return True
-        return urlparse(o).hostname in ("127.0.0.1", "localhost", "::1")
-
     def do_POST(self):
-        u = urlparse(self.path)
-        if not self._origin_ok():
-            _STATS["api_errors"] += 1
-            dlog("csrf_rejected", path=u.path,
-                 origin=self.headers.get("Origin", ""))
-            return self._json({"error": "forbidden origin"}, 403)
-        if u.path == "/api/send":
-            try:
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
-            except (json.JSONDecodeError, ValueError):
-                return self._json({"error": "bad json"}, 400)
-            to, msg = (body.get("to") or "").strip(), (body.get("body") or "").strip()
-            if not to or not msg:
-                return self._json({"error": "missing to/body"}, 400)
-            mach = (body.get("machine") or "").strip() or None
-            rc, out, err = run(["send"] + (["--machine", mach] if mach else []) + [to, msg])
-            dlog("send", target=to, machine=mach, rc=rc,
-                 out=(out or err).strip()[:200])
-            if rc != 0:
-                _STATS["api_errors"] += 1
-            receipts = [l for l in (out + err).splitlines() if l.strip()]
-            return self._json({"ok": rc == 0, "receipts": receipts})
-        return self._json({"error": "not found"}, 404)
+        # read-only by design: the console observes coordination; it does not
+        # intervene. Agents reach the human mailbox via `hirc send human` from
+        # their pane — no write surface here.
+        return self._json({"error": "read-only console"}, 404)
 
 
 if __name__ == "__main__":
