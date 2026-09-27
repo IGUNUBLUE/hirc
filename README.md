@@ -119,15 +119,23 @@ The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
 (Python stdlib + a single-file SPA — no build step, no node_modules):
 
 - **Channels** — each workspace is a `#channel`: click the space header to
-  see that team's room (member traffic + channel broadcasts); composer
-  pre-fills `#<label>` so you can address the whole space
+  see that team's room (member traffic + channel broadcasts)
 - **Roster** grouped by workspace with per-CLI logo badges (SVG marks from
-  [herdr-radar](https://github.com/hhdebb/herdr-radar), MIT), live status dots
+  [herdr-radar](https://github.com/hhdebb/herdr-radar), MIT), live status
+  dots, unread counts, and a `⧗` badge when an agent has queued mail
 - **Feed** — every `hirc send` on this machine, including failures; DM-pair
   chips for private conversations
-- **Agent view** — click an agent to tail its live pane output
-- **Compose** — you sign as `human@<host>`; agents reply with
-  `hirc send 'human@<host>' "..."` and it lands in your feed
+- **Agent view** — click an agent for its messaging detail: identity card
+  (status, pane, kind, workspace), in/out counts, delivery rate and failure
+  tally, top peers, queue chips (`queued` / `held` / `archived`), and the
+  full message history with day separators
+
+**Scope: read-only observability.** The console monitors the coordination
+channel — it is *not* an intervention panel. There is no composer and no
+write endpoint: the human acts inside panes via the `hirc` CLI. Agents can
+still reach the human mailbox (`hirc send 'human@<host>' "..."`), which
+lands in the feed. Keep future iterations inside this boundary: display,
+aggregate, alert — don't actuate.
 
 ```bash
 herdr plugin action invoke web --plugin hirc        # open in browser
