@@ -52,7 +52,7 @@ id = "message-log"
 title = "hirc: Message log"
 command = ["bash", "scripts/open-plugin-pane.sh", "log"]
 
-# web — open the browser console (roster, feed, agent output, human compose).
+# web — open the browser console (roster, feed, per-agent messaging detail).
 [[actions]]
 id = "web"
 title = "hirc: Open web UI"

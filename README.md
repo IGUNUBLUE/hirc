@@ -29,7 +29,9 @@ hirc send '#workspace' "msg"    channel: every agent in that workspace
 hirc send all "msg"             broadcast to everyone (costs each a turn)
 hirc reply <id> "msg"           reply by message id (threads the conversation)
 hirc inbox / check              durable unread mail / cheap "new mail?" probe
+hirc pending / drop             inspect queues / purge one (destructive)
 hirc flush [to] [--if-idle]     deliver coalesced queues
+                                (--onto <pane> retargets a dead queue)
 hirc ask wE:p1 "question?"      send + wait + print reply
 hirc send bob@workstation "hi"  remote agent via saved machine
 hirc read <to> / wait <to>      inspect / block on a peer
@@ -58,8 +60,10 @@ request so turn verification is atomic (a fast working→done turn can't slip
 between two calls). The `herdr` CLI remains the fallback for remote
 `@machine` targets and verbs without a socket method; `HIRC_NO_SOCK=1` forces
 it everywhere. `hirc-web` uses the same socket for `session.snapshot` and its
-event subscription (with a ping keepalive instead of resubscribing on quiet
-periods). `--if-idle` flushes retain queues whose pane is gone instead of
+event subscription — subscribed streams are read-only, so health is probed
+on a separate connection and read timeouts are tolerated rather than
+triggering a resubscribe. `--if-idle` flushes retain queues whose pane is gone
+instead of
 burning a delivery attempt per sweep. `hirc pending` lists every queue with
 its target's live status; a dead queue can be retargeted with
 `hirc flush <queue> --onto <name|pane>` (on failure the messages re-queue
@@ -68,7 +72,10 @@ name (pre-pane-pinning legacy) are never auto-drained — a freed name can be
 re-taken by a different pane, so sweeps and bulk flushes hold them; only an
 explicit `hirc flush <name>` or `--onto` drains, printing the resolved pane.
 `hirc nick` migrates the old name's queue under the pane id and warns when
-the claimed name carries a held queue from a previous holder. Hard failures
+the claimed name carries a held queue from a previous holder. Orphaned queues
+that outlive `HIRC_PURGE_DAYS` (default 7, `0` disables) are archived to `dead/` —
+recoverable via `mv` + `--onto`, never auto-deleted; `hirc drop <queue>` is
+the explicit destructive path. Hard failures
 and ambiguous names also raise a Herdr toast (`notification.show`), deduped
 per target, so stuck mail surfaces to the operator instead of sitting silent.
 
@@ -113,7 +120,7 @@ hirc nick <your-name>, then `hirc send all "Hi, I'm <name>, working on
 
 ## Web console — http://127.0.0.1:9344
 
-![hirc web console — workspace channels, live feed, agent roster](docs/mockup.svg)
+![hirc web console — workspace channels, message feed, agent roster](docs/screenshot.png)
 
 The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
 (Python stdlib + a single-file SPA — no build step, no node_modules):
@@ -123,12 +130,15 @@ The plugin's `[[startup]]` hook runs `hirc-web`, a zero-dependency console
 - **Roster** grouped by workspace with per-CLI logo badges (SVG marks from
   [herdr-radar](https://github.com/hhdebb/herdr-radar), MIT), live status
   dots, unread counts, and a `⧗` badge when an agent has queued mail
-- **Feed** — every `hirc send` on this machine, including failures; DM-pair
-  chips for private conversations
+- **Feed** — every `hirc send` on this machine, including failures;
+  workspace-channel filters toggle from the roster headers
 - **Agent view** — click an agent for its messaging detail: identity card
   (status, pane, kind, workspace), in/out counts, delivery rate and failure
   tally, top peers, queue chips (`queued` / `held` / `archived`), and the
-  full message history with day separators
+  full message history with day separators (card stays fixed while the
+  thread scrolls; auto-follows new messages unless you scroll up)
+- **Themes** — dark / light / system toggle in the topbar (`system` follows
+  `prefers-color-scheme` live; persisted in localStorage)
 
 **Scope: read-only observability.** The console monitors the coordination
 channel — it is *not* an intervention panel. There is no composer and no
@@ -169,4 +179,6 @@ can see who sent it and how to reply.
 
 - `delivered` means the text is in the peer's input queue — never re-ask.
 - `blocked` means the peer is at an approval dialog; surface it, don't retry.
-- Live delivery only — no durable mailbox (same as omp's IRC).
+- Delivery is live, storage is durable — every message lands in `mail/`
+  (`hirc inbox`), busy peers get coalesced queues in `pending/`, and mail to
+  dead panes is held then archived to `dead/` (TTL `HIRC_PURGE_DAYS`).
