@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -224,7 +225,7 @@ class Hirc(unittest.TestCase):
         pend.mkdir(parents=True, exist_ok=True)
         (pend / f"{name}.jsonl").write_text(
             json.dumps({"id": "leg1", "to": name, "from": "x",
-                        "ts": 1, "body": "old msg"}) + "\n")
+                        "ts": int(time.time()), "body": "old msg"}) + "\n")
 
     def test_namekeyed_queue_never_auto_drains(self):
         # a bare-name queue must not land on whoever holds the name now —
@@ -249,6 +250,53 @@ class Hirc(unittest.TestCase):
         self.assertIn("previous holder", r.stdout)
         f = self.hirc_state / "pending" / "newname.jsonl"
         self.assertTrue(f.exists())                 # held, not claimed
+
+    def _old_queue(self, stem, to_pane=None, to=None):
+        pend = self.hirc_state / "pending"
+        pend.mkdir(parents=True, exist_ok=True)
+        m = {"id": "old1", "to": to or stem, "from": "x", "ts": 1,
+             "body": "ancient"}
+        if to_pane:
+            m["to_pane"] = to_pane
+        (pend / f"{stem}.jsonl").write_text(json.dumps(m) + "\n")
+
+    def test_drop_purges_queue(self):
+        self._old_queue("w1_p9", to_pane="w1:p9")
+        r = self.cli("drop", "w1_p9")
+        self.assertIn("dropped 1 msg", r.stdout)
+        self.assertFalse(
+            (self.hirc_state / "pending" / "w1_p9.jsonl").exists())
+        r = self.cli("drop", "w1_p9")
+        self.assertIn("no queue", r.stderr)
+
+    def test_stale_orphan_queue_archives_not_delivers(self):
+        # a name-keyed queue older than PURGE_DAYS moves to dead/ instead of
+        # resolving to whoever holds the name now
+        self._old_queue("alice", to="alice")
+        r = self.cli("flush", "--if-idle")
+        self.assertIn("archived → dead/alice", r.stdout)
+        self.assertFalse(
+            (self.hirc_state / "pending" / "alice.jsonl").exists())
+        self.assertTrue(
+            (self.hirc_state / "dead" / "alice.jsonl").exists())
+        r = self.cli("pending")
+        self.assertIn("archived", r.stdout)
+
+    def test_purge_days_zero_keeps_forever(self):
+        self._old_queue("w9_p9", to_pane="w9:p9")
+        r = self.cli("flush", "--if-idle",
+                     env_extra={"HIRC_PURGE_DAYS": "0"})
+        self.assertIn("held → w9_p9", r.stdout)
+        self.assertTrue(
+            (self.hirc_state / "pending" / "w9_p9.jsonl").exists())
+        self.assertFalse((self.hirc_state / "dead").exists())
+
+    def test_fresh_orphan_queue_held_not_archived(self):
+        # recent msgs stay pending — TTL hasn't elapsed
+        self._namekey_queue("alice")
+        r = self.cli("flush", "--if-idle")
+        self.assertIn("held → alice", r.stdout)
+        self.assertFalse((self.hirc_state / "dead").exists())
 
     def test_log_scoping(self):
         self.cli("send", "alice", "dm")
