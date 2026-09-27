@@ -117,12 +117,9 @@
   .tab:disabled { opacity: .45; cursor: default }
   .tab-badge { background: var(--accent); color: #fff; border-radius: 9px;
                font-size: var(--fs-xs); padding: 0 6px; font-weight: bold }
-  .tabs .chips { margin-left: auto; display: flex; gap: 6px; overflow-x: auto; padding-bottom: 6px }
-  .chip { border: 1px solid var(--border); border-radius: 11px; padding: 2px 10px;
-          font-size: var(--fs-sm); color: var(--dim); cursor: pointer; white-space: nowrap;
-          user-select: none; transition: color .12s, border-color .12s }
-  .chip:hover { color: var(--fg) }
-  .chip.on { color: var(--accent); border-color: var(--accent) }
+  .fchip { margin-left: auto; color: var(--accent); border: 1px solid var(--accent);
+           border-radius: 11px; padding: 2px 10px; font-size: var(--fs-sm);
+           cursor: pointer; user-select: none; align-self: center; margin-bottom: 6px }
 
   /* feed */
   .feed { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-4) }

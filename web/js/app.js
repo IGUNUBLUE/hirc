@@ -50,6 +50,7 @@ PetiteVue.createApp({
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') this.setView('feed');
     });
+    this._feed = document.getElementById('feed');
   },
 
   // ---- derived ----
@@ -63,11 +64,6 @@ PetiteVue.createApp({
       id, label: label[id] || id, focused: !!focus[id],
       agents: [...agents].sort((x, y) => (STATUS_RANK[x.status] ?? 5) - (STATUS_RANK[y.status] ?? 5)),
     }));
-  },
-  get pairs() {
-    const keys = this.messages.filter(m => /delivered/.test(m.result) && !m.channel).map(m =>
-      m.to === 'human' ? `${m.from}→human` : [m.from || '?', m.to].sort().join('↔'));
-    return [...new Set(keys)].slice(-12);
   },
   membersOf(wsId) {
     return new Set(this.agents.filter(a => a.workspace === wsId).map(a => a.address));
@@ -202,7 +198,8 @@ PetiteVue.createApp({
     this.sel = null; this.setView('feed'); this.poll();
   },
   openChannel(g) {
-    this.setFilter('chan:' + g.id);
+    /* toggle: clicking the active channel goes back to the unfiltered feed */
+    this.setFilter(this.filter === 'chan:' + g.id ? 'all' : 'chan:' + g.id);
     this.drawer = false;
     this.setView('feed');
   },
