@@ -34,7 +34,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "0.2.3"
+VERSION = "0.2.4"
 NAME_RE = re.compile(r"[a-z][a-z0-9_-]{0,31}$")
 STATE_DIR = os.path.expanduser("~/.local/state/herdr/plugins/hirc")
 LOG_FILE = os.path.join(STATE_DIR, "messages.jsonl")
