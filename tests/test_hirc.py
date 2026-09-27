@@ -207,6 +207,18 @@ class Hirc(unittest.TestCase):
                      env_extra={"HIRC_SHIM_STUCK": "1", "HIRC_SHIM_SCREEN": "x"})
         self.assertIn("unverified", r.stdout)
 
+    def test_nick_migrates_namekeyed_queue(self):
+        pend = self.hirc_state / "pending"
+        pend.mkdir(parents=True, exist_ok=True)
+        (pend / "selfy.jsonl").write_text(
+            json.dumps({"id": "abc123", "to": "selfy", "from": "x",
+                        "ts": 1, "body": "m"}) + "\n")
+        r = self.cli("nick", "newname")
+        self.assertIn("moved 1 queued msg", r.stdout)
+        self.assertFalse((pend / "selfy.jsonl").exists())
+        q = json.loads((pend / "w1_p9.jsonl").read_text().strip())
+        self.assertEqual(q["to_pane"], "w1:p9")
+
     def test_log_scoping(self):
         self.cli("send", "alice", "dm")
         self.cli("send", "#space-a", "chan")

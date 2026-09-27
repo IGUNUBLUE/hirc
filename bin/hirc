@@ -628,9 +628,22 @@ def cmd_nick(args):
         a = holder[0]
         die(f"'{name}' is taken by {a['pane_id']} (ws {a.get('workspace_id')}) "
             "— names are global across workspaces; pick another")
+    old = next((a.get("name") for a in roster()
+                if a.get("pane_id") == pane), None)
     ok, _, err = herdr(["agent", "rename", pane, name])
     if not ok:
         die(f"rename failed: {err.get('code')} — {err.get('message')}")
+    if old and old != name:
+        # a name-keyed queue would orphan under the dead name — migrate it
+        # under the pane id, which survives the rename
+        moved = 0
+        for m in pend_drain(old):
+            m["to_pane"] = pane
+            pend_append(m)
+            moved += 1
+        if moved:
+            print(f"(moved {moved} queued msg{'s' if moved > 1 else ''} "
+                  f"from '{old}' → {pane})")
     print(f"you are now '{name}' — peers reach you with: hirc send {name} \"...\"")
 
 
