@@ -644,6 +644,12 @@ def cmd_nick(args):
         if moved:
             print(f"(moved {moved} queued msg{'s' if moved > 1 else ''} "
                   f"from '{old}' → {pane})")
+    held = os.path.join(PEND_DIR, _fname(name) + ".jsonl")
+    if os.path.exists(held):
+        n = sum(1 for _ in open(held, encoding="utf-8"))
+        print(f"note: {n} msg{'s' if n > 1 else ''} queued under '{name}' from "
+              f"a previous holder — held, will NOT auto-deliver to you. "
+              f"Inspect: hirc pending | claim: hirc flush {name} --onto {pane}")
     print(f"you are now '{name}' — peers reach you with: hirc send {name} \"...\"")
 
 
@@ -902,10 +908,27 @@ def cmd_flush(args):
             mach = None
             addr = msgs[0].get("to_pane") or disp
             if not msgs[0].get("to_pane"):
-                # pre-pane-key queue holds a bare name — re-resolve, never guess
+                # bare-name queue: the name may have been re-taken by a
+                # different pane since these were queued — inheriting another
+                # session's tasks is a misroute. Only an explicit
+                # `flush <name>` (operator intent) or --onto may drain it;
+                # sweeps and bulk flushes hold.
+                if args.if_idle or not args.to:
+                    print(f"held → {disp} ({len(msgs)} msg)  "
+                          "(name-keyed — the name may have a new owner; "
+                          "explicit: hirc flush <name> --onto <pane>)")
+                    notify("hirc: queue held — name-keyed",
+                           f"{disp}: {len(msgs)} msg; a name change can rebind "
+                           "this queue — retarget with hirc flush "
+                           f"{disp} --onto <pane>",
+                           dedupe_key=f"namekey:{disp}")
+                    for m in msgs:
+                        pend_append(m)
+                    continue
                 matches = resolve_panes(addr)
                 if len(matches) == 1:
                     addr = matches[0]["pane_id"]
+                    disp = f"{disp} ({addr})"
                 elif len(matches) > 1:
                     print(f"held → {disp} ({len(msgs)} msg)  "
                           f"(ambiguous: {_ambig_detail(matches)} — flush by pane id)")
