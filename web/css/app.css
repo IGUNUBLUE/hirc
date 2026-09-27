@@ -146,11 +146,34 @@
          border-radius: 6px; font-size: var(--fs-xs); padding: 3px 6px }
   .msg .body { white-space: pre-wrap; word-break: break-word; margin-top: 2px }
 
-  /* agent output */
-  .out { flex: 1; overflow-y: auto; padding: var(--sp-3) var(--sp-4); background: var(--bg-2);
-         color: #a9a7b8; font-size: 12px; font-family: var(--font-mono) }
-  .out .hdr { color: var(--dim); font-size: var(--fs-sm); margin-bottom: 6px }
-  .out .tail { white-space: pre-wrap; word-break: break-word; font: inherit }
+  /* agent detail — messaging-centric card */
+  .acard { display: flex; gap: var(--sp-3); align-items: center; padding: var(--sp-3);
+           background: var(--bg-2); border: 1px solid var(--border); border-radius: 8px;
+           margin-bottom: var(--sp-3) }
+  .badge.big { width: 34px; height: 34px; font-size: 14px; border-radius: 8px }
+  .badge.big img { width: 22px; height: 22px }
+  .acard-main { min-width: 0; flex: 1 }
+  .acard-name { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px }
+  .st-pill { font-size: var(--fs-xs); font-weight: 600; padding: 1px 8px; border-radius: 9px;
+             background: var(--bg-3); color: var(--dim); text-transform: uppercase; letter-spacing: .04em }
+  .st-pill.working { color: var(--st-working) } .st-pill.idle { color: var(--st-idle) }
+  .st-pill.done { color: var(--st-done) } .st-pill.blocked { color: var(--st-blocked) }
+  .st-pill.gone, .st-pill.unknown { color: var(--st-unknown) }
+  .acard-sub { color: var(--dim); font-size: var(--fs-sm); font-family: var(--font-mono); margin-top: 1px }
+  .acard-stats { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+                 color: var(--dim); font-size: var(--fs-sm); margin-top: 4px }
+  .qchip { border: 1px solid #8a6d1f; color: #c9a13b; border-radius: 9px;
+           padding: 0 8px; font-size: var(--fs-xs) }
+  .qchip.gone { border-color: var(--st-blocked); color: var(--st-blocked) }
+
+  /* day separators in the thread */
+  .day { display: flex; align-items: center; gap: var(--sp-3); margin: var(--sp-3) 0;
+         color: var(--dim); font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .07em }
+  .day::before, .day::after { content: ''; flex: 1; border-top: 1px solid var(--border) }
+
+  /* queued badge on roster rows */
+  .queued { color: #c9a13b; border: 1px solid #8a6d1f; border-radius: 9px;
+            font-size: var(--fs-xs); padding: 0 6px; font-weight: bold }
 
   /* composer */
   .receipt-line { font-size: var(--fs-sm); padding: 0 var(--sp-4) 8px; color: var(--dim); background: var(--bg-2) }

@@ -14,16 +14,21 @@ const ICONS = new Set(['agy', 'amp', 'claude', 'cline', 'codex', 'copilot', 'cur
 const STATUS_RANK = { blocked: 0, working: 1, unknown: 2, idle: 3, done: 4 };
 const now = () => Math.floor(Date.now() / 1000);
 const time = ts => new Date(ts * 1000).toTimeString().slice(0, 8);
+const dateStr = ts => {
+  const d = new Date(ts * 1000), t = new Date(), y = new Date(Date.now() - 864e5);
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  return same(d, t) ? 'today' : same(d, y) ? 'yesterday' : d.toLocaleDateString();
+};
 
 PetiteVue.createApp({
   // ---- state ----
-  agents: [], workspaces: [], messages: [], me: null,
+  agents: [], workspaces: [], messages: [], pending: [], me: null,
   machines: [], machine: localStorage.hircMachine || '',
   online: false, host: location.host,
   sel: localStorage.hircSel || null,
   view: 'feed', feedSeen: now(), drawer: false,
   filter: localStorage.hircFilter || 'all',
-  to: '', body: '', receipt: '', out: '',
+  to: '', body: '', receipt: '',
   notify: localStorage.hircNotify === '1',
   lastSeen: JSON.parse(localStorage.hircSeen || '{}'),
   seenCount: +(localStorage.hircCount || 0),
@@ -41,15 +46,14 @@ PetiteVue.createApp({
       this.online = true;
     };
     es.onerror = () => { this.online = false; };
-    this._timers = [setInterval(() => this.poll(), 30000), setInterval(() => this.tail(), 3000)];
+    this._timers = [setInterval(() => this.poll(), 30000)];
     document.addEventListener('visibilitychange', () => { if (!document.hidden) this.poll(); });
     document.addEventListener('keydown', e => {
       if (e.key === '/' && !/INPUT|TEXTAREA/.test(e.target.tagName)) {
         e.preventDefault(); document.querySelector('.composer input[aria-label="message"]')?.focus();
       }
-      if (e.key === 'Escape') this.setFilter('all');
+      if (e.key === 'Escape') this.setView('feed');
     });
-    this._feed = document.getElementById('feed');
   },
 
   // ---- derived ----
@@ -92,16 +96,62 @@ PetiteVue.createApp({
       : this.messages.filter(m => m.ts > this.feedSeen).length;
   },
 
+  // ---- agent detail (messaging view — no terminal tail) ----
+  get selAgent() {
+    return this.agents.find(a => a.address === this.sel || a.pane === this.sel) || null;
+  },
+  idsFor(addr) {
+    /* every alias a message could use for this agent: nick and pane id */
+    const a = this.agents.find(x => x.address === addr || x.pane === addr);
+    return new Set([addr, a?.pane, a?.address].filter(Boolean));
+  },
+  get threadMsgs() {
+    if (!this.sel) return [];
+    const ids = this.idsFor(this.sel);
+    return this.messages.filter(m => ids.has(m.from) || ids.has(m.to) || ids.has(m.to_pane));
+  },
+  get threadItems() {
+    /* message history with day separators — chat-style chronology */
+    const items = [];
+    let day = '';
+    for (const m of this.threadMsgs) {
+      const label = dateStr(m.ts);
+      if (label !== day) { day = label; items.push({ type: 'day', label }); }
+      items.push({ type: 'msg', m });
+    }
+    return items;
+  },
+  get agentStats() {
+    const ids = this.idsFor(this.sel);
+    const t = this.threadMsgs;
+    const toMe = t.filter(m => ids.has(m.from)).length;
+    const last = t.length ? t[t.length - 1].ts : null;
+    return { msgs: t.length, from: toMe, to: t.length - toMe, last };
+  },
+  get selQueues() {
+    if (!this.sel) return [];
+    const ids = this.idsFor(this.sel);
+    return this.pending.filter(qu => ids.has(qu.addr) || ids.has(qu.addr?.replace(/[:]/g, '_')));
+  },
+  queuedCount(a) {
+    const ids = this.idsFor(a.address);
+    return this.pending.filter(qu => !qu.archived &&
+      (ids.has(qu.addr) || ids.has(qu.addr?.replace(/:/g, '_'))))
+      .reduce((n, qu) => n + qu.msgs, 0);
+  },
+
   // ---- helpers ----
   kindFor(addr) { return this.agents.find(a => a.address === addr)?.kind || (addr === 'human' ? 'human' : '?'); },
   kindColor(k) { return KIND[k] || '#3a3a48'; },
   kindLetters(k) { return (k === 'human' ? 'Hu' : (k || '?').slice(0, 2)); },
   hasIcon(k) { return ICONS.has(k); },
   isOk(r) { return /delivered/.test(r || ''); },
-  time,
+  time, dateStr,
   unreadFor(addr) {
     const seen = this.lastSeen[addr] || 0;
-    return this.messages.filter(m => m.ts > seen && (m.from === addr || m.to === addr)).length;
+    const ids = this.idsFor(addr);
+    return this.messages.filter(m => m.ts > seen &&
+      (ids.has(m.from) || ids.has(m.to) || ids.has(m.to_pane))).length;
   },
 
   // ---- actions ----
@@ -114,30 +164,22 @@ PetiteVue.createApp({
       }
       this.seenCount = Math.max(this.seenCount, d.messages.length);
       localStorage.hircCount = this.seenCount;
-      const stick = this.view === 'feed' && this._feed &&
-        (this._feed.scrollHeight - this._feed.scrollTop - this._feed.clientHeight < 40);
-      Object.assign(this, { agents: d.agents, workspaces: d.workspaces, messages: d.messages, me: d.me });
+      const el = this._feed;
+      const stick = el && (el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+      Object.assign(this, { agents: d.agents, workspaces: d.workspaces,
+                            messages: d.messages, pending: d.pending || [], me: d.me });
       this.online = true;
       document.title = `hirc${this.nBlocked ? ` (${this.nBlocked} blocked)` : ''}`;
-      if (stick) requestAnimationFrame(() => { this._feed.scrollTop = this._feed.scrollHeight; });
+      if (stick) requestAnimationFrame(() => { el.scrollTop = el.scrollHeight; });
     } catch { this.online = false; }
-  },
-  async tail() {
-    if (!this.sel || this.view !== 'output') return;
-    try {
-      const d = await (await fetch(`/api/agent/${encodeURIComponent(this.sel)}/output?lines=120`)).json();
-      this.out = d.output || d.error || '';
-    } catch { /* keep last frame */ }
   },
   setView(v) {
     this.view = v;
-    if (v === 'feed') {
-      this.feedSeen = now();
-      requestAnimationFrame(() => {
-        this._feed = document.getElementById('feed');
-        if (this._feed) this._feed.scrollTop = this._feed.scrollHeight;
-      });
-    } else this.tail();
+    if (v === 'feed') this.feedSeen = now();
+    requestAnimationFrame(() => {
+      this._feed = document.getElementById('feed');
+      if (this._feed) this._feed.scrollTop = this._feed.scrollHeight;
+    });
   },
   select(a) {
     this.sel = a.address; localStorage.hircSel = a.address;
@@ -145,7 +187,7 @@ PetiteVue.createApp({
     this.lastSeen[a.address] = now();
     localStorage.hircSeen = JSON.stringify(this.lastSeen);
     this.drawer = false;
-    this.setView('output');
+    this.setView('agent');
   },
   setFilter(p) { this.filter = p; localStorage.hircFilter = p; },
   setMachine(m) {
@@ -157,6 +199,10 @@ PetiteVue.createApp({
     this.to = '#' + g.label;
     this.drawer = false;
     this.setView('feed');
+  },
+  replyTo(m) {
+    this.to = m.from === 'human' ? 'human' : m.from;
+    document.querySelector('.composer input[aria-label="message"]')?.focus();
   },
   async toggleBell() {
     this.notify = !this.notify;
