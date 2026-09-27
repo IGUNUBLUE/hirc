@@ -62,18 +62,16 @@
 
   <section class="content">
     <nav class="tabs" aria-label="panels">
-      <button class="tab" :class="{on: view==='feed'}" @click="setView('feed')">
+      <button class="tab" :class="{on: view==='feed'}" @click="setFilter('all'); setView('feed')">
         Feed<span class="tab-badge" v-if="view!=='feed' && freshFeed">{{ freshFeed }}</span>
       </button>
       <button class="tab" :class="{on: view==='agent'}" @click="setView('agent')" :disabled="!sel">
         {{ sel ? sel : 'agent' }}
       </button>
-      <nav class="chips" aria-label="conversations" v-if="view==='feed'">
-        <span class="chip" :class="{on: filter==='all'}" @click="setFilter('all')">all</span>
-        <span class="chip" v-for="g in groups" :key="'c'+g.id"
-              :class="{on: filter==='chan:'+g.id}" @click="openChannel(g)">#{{ g.label }}</span>
-        <span class="chip" v-for="p in pairs" :key="p" :class="{on: filter===p}" @click="setFilter(p)">{{ p }}</span>
-      </nav>
+      <span class="fchip" v-if="view==='feed' && filter!=='all'"
+            @click="setFilter('all')" title="clear filter">
+        {{ filter.startsWith('chan:') ? '#' + chanLabel(filter.slice(5)) : filter }} ×
+      </span>
     </nav>
 
     <div id="feed" class="feed" aria-live="polite" v-if="view==='feed'">
