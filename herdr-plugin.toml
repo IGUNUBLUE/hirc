@@ -1,7 +1,7 @@
 # herdr-plugin.toml — registers hirc with Herdr as a plugin.
 #
 # Local checkout:
-#   herdr plugin link /home/l/Projects/hirc
+#   herdr plugin link /path/to/hirc
 # From a git remote (once published):
 #   herdr plugin install <owner>/<repo>
 #
